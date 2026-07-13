@@ -35,10 +35,16 @@ can begin at `x = -1920`. The normalized coordinate algorithm preserves that off
 Low-level Windows mouse and keyboard hooks distinguish physical events from events injected by
 the server. Physical activity temporarily blocks remote input for every connected client.
 
-The IME button targets the foreground window through IMM32. Modern Text Services Framework-only
-applications, elevated windows above the server's integrity level, console windows, and custom
-controls may expose no compatible input context. In those cases the button is unavailable or the
-requested state can be rejected. The feature does not stop the Windows input service.
+The IME button targets the foreground window through IMM32. When enabling, it restores the most
+recent or first loaded IME input layout if the application is currently using direct input. It
+then updates both the input context and the thread's default IME window. If Windows still reports
+the opposite state, the controller uses the installed language's IME system toggle and verifies
+the result again.
+
+Modern Text Services Framework-only applications, elevated windows above the server's integrity
+level, console windows, and custom controls may expose no compatible input context or may reject
+an input-language request. In those cases the button is unavailable or reports the failed change.
+The feature does not stop the Windows input service.
 
 ### Security desktop limitation
 

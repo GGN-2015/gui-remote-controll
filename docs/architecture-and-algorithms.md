@@ -282,8 +282,10 @@ that continues sending input is still rejected by the server.
 The IME controller always sets an explicit target and queries the resulting state. It never
 simulates a user-configurable keyboard shortcut.
 
-- Windows calls IMM32 against the foreground window's input context and falls back to its default
-  IME window for legacy-compatible applications.
+- Windows remembers an IME keyboard layout, restores it through `WM_INPUTLANGCHANGEREQUEST` when
+  necessary, and updates both the foreground IMM32 context and its default IME window. It queries
+  the window again and uses the Chinese, Japanese, Korean, or Thai system IME toggle only when the
+  explicit update did not reach the requested state.
 - Fcitx 4/5 uses the remote command's explicit active/inactive operations.
 - IBus saves a non-XKB engine, chooses an enabled XKB engine as direct input, and restores the
   saved engine when enabled again.

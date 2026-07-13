@@ -77,7 +77,7 @@ def test_control_ui_contains_automatic_clipboard_sync() -> None:
     assert "knownDigest" in script.text
     assert 'id="control-permission"' in page.text
     assert 'id="ime-button"' in page.text
-    assert "/static/app.js?v=0.1.2" in page.text
+    assert "/static/app.js?v=0.1.3" in page.text
     assert "{{APP_" not in page.text
 
 

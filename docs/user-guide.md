@@ -200,7 +200,9 @@ The **IME: On** / **IME: Off** button changes the input mode on the server compu
 input-source operation, not a request to terminate, uninstall, or reconfigure the operating
 system's input method service. The button is enabled only while **Control available** is active.
 
-- Windows reads and changes the open status of the foreground window's IMM32 input context.
+- Windows restores a loaded IME layout when necessary, updates both the foreground IMM32 context
+  and default IME window, then uses a language-specific system IME toggle only if the requested
+  open state was not applied.
 - Linux uses `fcitx5-remote` or `fcitx-remote` when available. With IBus, turning IME off selects
   an enabled XKB direct-input engine and turning it on restores the saved input method engine.
 - macOS turns IME off by selecting an enabled ASCII-capable input source. It remembers and

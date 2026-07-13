@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.3
+
+- Fix Windows IME re-enabling when `ImmSetOpenStatus` reports success without changing the
+  foreground IME window.
+- Restore an installed Windows IME input layout before opening when the foreground application is
+  using a direct-input layout.
+- Fall back to the language-specific Windows IME system toggle only when explicit open-status
+  updates do not reach the requested state.
+- Verify delayed Windows IME state changes before reporting the operation result.
+
 ## 0.1.2
 
 - Add `--title` with the default client title `GUI Remote Controll`.

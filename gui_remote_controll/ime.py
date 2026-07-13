@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -30,6 +31,7 @@ class ImeController:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        self._saved_windows_layout: int | None = None
         self._saved_ibus_engine: str | None = None
         self._saved_macos_source: int | None = None
         self._mac_api: dict[str, Any] | None = None
@@ -59,12 +61,16 @@ class ImeController:
                 self._macos_set(enabled)
             else:
                 raise ImeControlError(f"IME control is not supported on {system}.")
-            state = self.status()
-            if not state.supported or state.enabled is not enabled:
-                raise ImeControlError(
-                    state.detail or "The operating system did not apply the requested IME state."
-                )
-            return state
+            attempts = 5 if system == "Windows" else 1
+            for attempt in range(attempts):
+                state = self.status()
+                if state.supported and state.enabled is enabled:
+                    return state
+                if attempt + 1 < attempts:
+                    time.sleep(0.05)
+            raise ImeControlError(
+                state.detail or "The operating system did not apply the requested IME state."
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -77,6 +83,16 @@ class ImeController:
         hwnd = user32.GetForegroundWindow()
         if not hwnd:
             return ImeState(True, None, "No foreground window has an input context.")
+        layout = _windows_foreground_layout(user32, hwnd)
+        if layout and imm32.ImmIsIME(layout):
+            self._saved_windows_layout = layout
+        elif layout:
+            return ImeState(True, False, "Windows direct-input layout")
+
+        enabled = _windows_open_status(user32, imm32, hwnd)
+        if enabled is not None:
+            return ImeState(True, enabled, "Windows IMM32")
+
         context = imm32.ImmGetContext(hwnd)
         if context:
             try:
@@ -84,29 +100,54 @@ class ImeController:
             finally:
                 imm32.ImmReleaseContext(hwnd, context)
             return ImeState(True, enabled, "Windows IMM32")
-        ime_window = imm32.ImmGetDefaultIMEWnd(hwnd)
-        if not ime_window:
-            return ImeState(True, None, "The foreground window has no accessible IME.")
-        enabled = bool(user32.SendMessageW(ime_window, 0x0283, 0x0005, 0))
-        return ImeState(True, enabled, "Windows IMM32")
+        return ImeState(True, None, "The foreground window has no accessible IME.")
 
     def _windows_set(self, enabled: bool) -> None:
         user32, imm32 = _windows_libraries()
         hwnd = user32.GetForegroundWindow()
         if not hwnd:
             raise ImeControlError("No foreground window has an input context.")
+        layout = _windows_foreground_layout(user32, hwnd)
+        if layout and imm32.ImmIsIME(layout):
+            self._saved_windows_layout = layout
+        elif enabled:
+            layouts = _windows_ime_layouts(user32, imm32)
+            target = (
+                self._saved_windows_layout
+                if self._saved_windows_layout in layouts
+                else next(iter(layouts), None)
+            )
+            if target is None:
+                raise ImeControlError("Windows has no installed IME input layout to activate.")
+            if not user32.PostMessageW(hwnd, 0x0050, 0x0001, target):
+                raise ImeControlError("Windows rejected the IME input layout request.")
+            deadline = time.monotonic() + 0.4
+            while time.monotonic() < deadline:
+                layout = _windows_foreground_layout(user32, hwnd)
+                if layout and imm32.ImmIsIME(layout):
+                    self._saved_windows_layout = layout
+                    break
+                time.sleep(0.02)
+
         context = imm32.ImmGetContext(hwnd)
-        applied = False
+        context_applied = False
         if context:
             try:
-                applied = bool(imm32.ImmSetOpenStatus(context, enabled))
+                context_applied = bool(imm32.ImmSetOpenStatus(context, enabled))
             finally:
                 imm32.ImmReleaseContext(hwnd, context)
-        if not applied:
-            ime_window = imm32.ImmGetDefaultIMEWnd(hwnd)
-            if not ime_window:
-                raise ImeControlError("The foreground window has no accessible IME.")
+        ime_window = imm32.ImmGetDefaultIMEWnd(hwnd)
+        if ime_window:
             user32.SendMessageW(ime_window, 0x0283, 0x0006, int(enabled))
+        elif not context_applied:
+            raise ImeControlError("The foreground window has no accessible IME.")
+
+        open_status = _windows_open_status(user32, imm32, hwnd)
+        if open_status is not None and open_status is not enabled:
+            layout = _windows_foreground_layout(user32, hwnd)
+            hotkey = _windows_toggle_hotkey(layout)
+            if hotkey is not None:
+                imm32.ImmSimulateHotKey(hwnd, hotkey)
 
     def _linux_status(self) -> ImeState:
         fcitx = _active_fcitx()
@@ -198,6 +239,14 @@ def _windows_libraries() -> tuple[Any, Any]:
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     imm32 = ctypes.WinDLL("imm32", use_last_error=True)
     user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.GetKeyboardLayout.argtypes = [wintypes.DWORD]
+    user32.GetKeyboardLayout.restype = ctypes.c_void_p
+    user32.GetKeyboardLayoutList.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)]
+    user32.GetKeyboardLayoutList.restype = ctypes.c_int
+    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.PostMessageW.restype = wintypes.BOOL
     user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     user32.SendMessageW.restype = wintypes.LPARAM
     imm32.ImmGetContext.argtypes = [wintypes.HWND]
@@ -208,9 +257,52 @@ def _windows_libraries() -> tuple[Any, Any]:
     imm32.ImmGetOpenStatus.restype = wintypes.BOOL
     imm32.ImmSetOpenStatus.argtypes = [ctypes.c_void_p, wintypes.BOOL]
     imm32.ImmSetOpenStatus.restype = wintypes.BOOL
+    imm32.ImmSimulateHotKey.argtypes = [wintypes.HWND, wintypes.DWORD]
+    imm32.ImmSimulateHotKey.restype = wintypes.BOOL
     imm32.ImmGetDefaultIMEWnd.argtypes = [wintypes.HWND]
     imm32.ImmGetDefaultIMEWnd.restype = wintypes.HWND
+    imm32.ImmIsIME.argtypes = [ctypes.c_void_p]
+    imm32.ImmIsIME.restype = wintypes.BOOL
     return user32, imm32
+
+
+def _windows_foreground_layout(user32: Any, hwnd: int) -> int | None:
+    from ctypes import wintypes
+
+    process_id = wintypes.DWORD()
+    thread_id = user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+    if not thread_id:
+        return None
+    layout = user32.GetKeyboardLayout(thread_id)
+    return int(layout) if layout else None
+
+
+def _windows_ime_layouts(user32: Any, imm32: Any) -> tuple[int, ...]:
+    count = int(user32.GetKeyboardLayoutList(0, None))
+    if count <= 0:
+        return ()
+    layouts = (ctypes.c_void_p * count)()
+    copied = int(user32.GetKeyboardLayoutList(count, layouts))
+    return tuple(int(layout) for layout in layouts[:copied] if layout and imm32.ImmIsIME(layout))
+
+
+def _windows_open_status(user32: Any, imm32: Any, hwnd: int) -> bool | None:
+    ime_window = imm32.ImmGetDefaultIMEWnd(hwnd)
+    if not ime_window:
+        return None
+    return bool(user32.SendMessageW(ime_window, 0x0283, 0x0005, 0))
+
+
+def _windows_toggle_hotkey(layout: int | None) -> int | None:
+    if not layout:
+        return None
+    primary_language = (layout & 0xFFFF) & 0x03FF
+    return {
+        0x04: 0x10,  # Chinese: IME_CHOTKEY_IME_NONIME_TOGGLE
+        0x11: 0x30,  # Japanese: IME_JHOTKEY_CLOSE_OPEN
+        0x12: 0x52,  # Korean: IME_KHOTKEY_ENGLISH
+        0x1E: 0x70,  # Thai: IME_THOTKEY_IME_NONIME_TOGGLE
+    }.get(primary_language)
 
 
 def _active_fcitx() -> tuple[str, str] | None:
