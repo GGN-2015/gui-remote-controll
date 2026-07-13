@@ -54,7 +54,7 @@ def validate_client_message(payload: Any, *, max_text_chars: int) -> dict[str, A
             "repeat": bool(payload.get("repeat", False)),
         }
 
-    if message_type in {"text", "clipboard_set"}:
+    if message_type == "text":
         text = payload.get("text")
         if not isinstance(text, str):
             raise ProtocolError("text must be a string.")
@@ -62,13 +62,33 @@ def validate_client_message(payload: Any, *, max_text_chars: int) -> dict[str, A
             raise ProtocolError(f"text exceeds the {max_text_chars} character limit.")
         return {"type": message_type, "text": text}
 
+    if message_type == "clipboard_set":
+        text = payload.get("text")
+        if not isinstance(text, str):
+            raise ProtocolError("text must be a string.")
+        if len(text) > max_text_chars:
+            raise ProtocolError(f"text exceeds the {max_text_chars} character limit.")
+        return {
+            "type": message_type,
+            "text": text,
+            "requestId": _short_string(payload.get("requestId", ""), "requestId", 64),
+        }
+
     if message_type == "monitor":
         index = payload.get("index")
         if isinstance(index, bool) or not isinstance(index, int) or index < 0:
             raise ProtocolError("monitor index must be a non-negative integer.")
         return {"type": message_type, "index": index}
 
-    if message_type in {"clipboard_get", "ping"}:
+    if message_type == "clipboard_get":
+        return {
+            "type": message_type,
+            "knownDigest": _short_string(
+                payload.get("knownDigest", ""), "knownDigest", 64
+            ),
+        }
+
+    if message_type == "ping":
         return {"type": message_type}
 
     raise ProtocolError("Unsupported message type.")

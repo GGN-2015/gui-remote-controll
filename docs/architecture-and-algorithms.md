@@ -250,6 +250,35 @@ protocol validator rejects an oversized set before calling the backend.
 Clipboard operations are independent of view-only input control. They are completely rejected
 only when clipboard synchronization is disabled.
 
+### Automatic client state machine
+
+Automatic synchronization begins with independent client and server baselines, so enabling it
+does not immediately overwrite either clipboard. The client then tracks the last observed text
+from both sides. A new local value is sent to the server and optimistically becomes the expected
+server value. A new server value is written locally while an `applyingServerClipboard` guard
+suppresses the resulting browser change event.
+
+If the client changes before the first server baseline response arrives, a baseline-pending flag
+causes that stale response to be ignored. This makes active local input win the only interval in
+which ordering is otherwise unknowable.
+
+The client prefers the standard `clipboardchange` event. When it is unavailable, a one-second
+poll reads the client clipboard. Server polling continues in either case, but only while the page
+is visible and focused. Browser permission loss disables the switch instead of silently running
+one-way synchronization.
+
+### Digest negotiation
+
+Server clipboard text is hashed as `BLAKE2b(UTF8(text), digest_size=8)`. Automatic
+`clipboard_get` messages include the last known hexadecimal digest:
+
+- a match returns `clipboard_unchanged` with only the digest;
+- a mismatch or missing digest returns `clipboard` with text and digest.
+
+This digest is a bandwidth optimization, not an authentication primitive. `clipboard_set`
+requests carry a short `requestId`; acknowledgements echo it so the UI can distinguish automatic
+writes from explicit manual writes.
+
 ## Client-to-server protocol
 
 All client messages are JSON objects. The maximum encoded message size is 1,100,000 bytes.
@@ -262,8 +291,8 @@ Numbers must be finite; booleans are not accepted as numeric values.
 | `key` | `event`: `down/up`, `key`, `code`, `repeat` | Named key or modified character event. |
 | `text` | `text` | Ordinary or composed text to type. |
 | `monitor` | nonnegative integer `index` | Change this connection's captured display. |
-| `clipboard_get` | none | Read server clipboard text. |
-| `clipboard_set` | `text` | Replace server clipboard text. |
+| `clipboard_get` | optional `knownDigest` | Read server clipboard text, or confirm that a known digest is current. |
+| `clipboard_set` | `text`, optional `requestId` | Replace server clipboard text. |
 | `ping` | none | Application-level liveness request. |
 
 Unknown types, invalid ranges, excessive strings, NaN, infinity, and malformed JSON produce an
@@ -277,8 +306,9 @@ JPEG frames are binary messages. All other messages are JSON.
 | --- | --- | --- |
 | `hello` | `protocol`, `platform`, `viewOnly`, `clipboard`, `screens`, `monitor` | Initial capabilities and display list. Current protocol is `1`. |
 | `screen` | screen fields | Metadata for the binary frames that follow. |
-| `clipboard` | `text` | Result of `clipboard_get`. |
-| `clipboard_saved` | none | Confirmation of `clipboard_set`. |
+| `clipboard` | `text`, `digest` | Changed or explicitly requested server clipboard text. |
+| `clipboard_unchanged` | `digest` | The supplied server clipboard digest is still current. |
+| `clipboard_saved` | `digest`, optional `requestId` | Confirmation of `clipboard_set`. |
 | `pong` | none | Response to `ping`. |
 | `error` | `message` | Recoverable protocol or desktop operation error. |
 | `fatal` | `message` | Desktop capture cannot continue. |

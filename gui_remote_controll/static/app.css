@@ -83,6 +83,7 @@ select:disabled {
 .toolbar-actions,
 .monitor-control,
 .segmented,
+.sync-control,
 .dialog-heading,
 .dialog-actions {
   display: flex;
@@ -179,6 +180,70 @@ h2 {
 .segmented button[aria-pressed="true"] {
   background: #1c2521;
   color: #ffffff;
+}
+
+.sync-control {
+  position: relative;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid #c7ccc9;
+  border-radius: 5px;
+  background: #ffffff;
+  color: #4f5752;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.sync-control:has(input:disabled) {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.sync-control input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.switch-track {
+  position: relative;
+  width: 30px;
+  height: 18px;
+  border: 1px solid #9da6a1;
+  border-radius: 9px;
+  background: #dfe3e1;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.switch-track::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+  content: "";
+  transition: transform 120ms ease;
+}
+
+.sync-control input:checked + .switch-track {
+  border-color: #007a4d;
+  background: #007a4d;
+}
+
+.sync-control input:checked + .switch-track::after {
+  transform: translateX(12px);
+}
+
+.sync-control input:focus-visible + .switch-track {
+  outline: 3px solid rgba(0, 122, 77, 0.24);
+  outline-offset: 2px;
 }
 
 .quiet-button {
@@ -395,9 +460,14 @@ h2 {
 @media (max-width: 520px) {
   .toolbar-actions {
     display: grid;
-    grid-template-columns: minmax(96px, 1fr) auto auto auto;
+    grid-template-columns: minmax(96px, 1fr) auto auto;
     width: 100%;
     overflow: visible;
+  }
+
+  .sync-control {
+    grid-column: 1 / -1;
+    justify-self: start;
   }
 
   .monitor-control select {

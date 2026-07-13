@@ -332,8 +332,16 @@ async def _receive_messages(
                 continue
             try:
                 text = await asyncio.to_thread(backend.clipboard_get)
+                digest = _clipboard_digest(text)
                 async with send_lock:
-                    await websocket.send_json({"type": "clipboard", "text": text})
+                    if message["knownDigest"] == digest:
+                        await websocket.send_json(
+                            {"type": "clipboard_unchanged", "digest": digest}
+                        )
+                    else:
+                        await websocket.send_json(
+                            {"type": "clipboard", "text": text, "digest": digest}
+                        )
             except DesktopUnavailableError as exc:
                 await _send_error(websocket, send_lock, str(exc))
             continue
@@ -344,9 +352,20 @@ async def _receive_messages(
             try:
                 await asyncio.to_thread(backend.clipboard_set, message["text"])
                 async with send_lock:
-                    await websocket.send_json({"type": "clipboard_saved"})
+                    await websocket.send_json(
+                        {
+                            "type": "clipboard_saved",
+                            "digest": _clipboard_digest(message["text"]),
+                            "requestId": message["requestId"],
+                        }
+                    )
             except DesktopUnavailableError as exc:
-                await _send_error(websocket, send_lock, str(exc))
+                await _send_error(
+                    websocket,
+                    send_lock,
+                    str(exc),
+                    request_id=message["requestId"],
+                )
             continue
         if settings.view_only:
             continue
@@ -368,9 +387,22 @@ async def _receive_messages(
             await _send_error(websocket, send_lock, str(exc))
 
 
-async def _send_error(websocket: WebSocket, lock: asyncio.Lock, message: str) -> None:
+async def _send_error(
+    websocket: WebSocket,
+    lock: asyncio.Lock,
+    message: str,
+    *,
+    request_id: str = "",
+) -> None:
+    payload = {"type": "error", "message": message}
+    if request_id:
+        payload["requestId"] = request_id
     async with lock:
-        await websocket.send_json({"type": "error", "message": message})
+        await websocket.send_json(payload)
+
+
+def _clipboard_digest(text: str) -> str:
+    return hashlib.blake2b(text.encode("utf-8"), digest_size=8).hexdigest()
 
 
 def _select_screen(screens: tuple[Screen, ...], preferred: int) -> Screen:

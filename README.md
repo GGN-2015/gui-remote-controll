@@ -53,6 +53,7 @@ for setup and troubleshooting details.
 - [Architecture and algorithms](https://github.com/GGN-2015/gui-remote-controll/blob/main/docs/architecture-and-algorithms.md)
 - [Platform support](https://github.com/GGN-2015/gui-remote-controll/blob/main/docs/platform-support.md)
 - [Development and release guide](https://github.com/GGN-2015/gui-remote-controll/blob/main/docs/development.md)
+- [Changelog](https://github.com/GGN-2015/gui-remote-controll/blob/main/CHANGELOG.md)
 - [Security policy](https://github.com/GGN-2015/gui-remote-controll/blob/main/SECURITY.md)
 
 The Python import package is `gui_remote_controll`. The PyPI distribution and command name

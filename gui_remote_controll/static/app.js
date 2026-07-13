@@ -15,9 +15,14 @@
   const actualButton = document.querySelector("#actual-button");
   const fullscreenButton = document.querySelector("#fullscreen-button");
   const clipboardButton = document.querySelector("#clipboard-button");
+  const clipboardSyncControl = document.querySelector("#clipboard-sync-control");
+  const clipboardSyncToggle = document.querySelector("#clipboard-sync-toggle");
   const clipboardDialog = document.querySelector("#clipboard-dialog");
   const clipboardText = document.querySelector("#clipboard-text");
   const toast = document.querySelector("#toast");
+
+  const CLIPBOARD_SYNC_STORAGE_KEY = "gui-remote-clipboard-sync";
+  const CLIPBOARD_SYNC_INTERVAL_MS = 1000;
 
   let socket = null;
   let reconnectTimer = null;
@@ -30,8 +35,25 @@
   let pointerFrame = null;
   let lastPointer = { x: 0.5, y: 0.5 };
   let toastTimer = null;
+  let clipboardSyncTimer = null;
+  let clipboardSyncActive = false;
+  let clipboardSyncBusy = false;
+  let clipboardStartupPermissionAttempted = false;
+  let clipboardPermissionObserved = false;
+  let clipboardNoticeShown = false;
+  let clipboardChangeListening = false;
+  let applyingServerClipboard = false;
+  let serverClipboardWriteRunning = false;
+  let pendingServerClipboard = null;
+  let lastClientClipboard = null;
+  let lastServerClipboard = null;
+  let lastServerClipboardDigest = null;
+  let serverClipboardBaselinePending = false;
+  let clientChangedBeforeServerBaseline = false;
+  let clipboardRequestSequence = 0;
   const heldKeys = new Map();
   const heldButtons = new Set();
+  const clipboardWriteOrigins = new Map();
 
   function setConnection(label, state) {
     connectionState.textContent = label;
@@ -90,13 +112,27 @@
       handleServerMessage(message);
     });
 
-    socket.addEventListener("close", (event) => {
+    socket.addEventListener("close", async (event) => {
       releaseLocalState(false);
+      stopClipboardSyncRuntime();
       monitorSelect.disabled = true;
       clipboardButton.disabled = true;
+      clipboardSyncToggle.disabled = true;
       if (event.code === 4401) {
         window.location.assign("/auth");
         return;
+      }
+      try {
+        const status = await window.fetch("/api/status", {
+          cache: "no-store",
+          credentials: "same-origin",
+        });
+        if (status.status === 401) {
+          window.location.assign("/auth");
+          return;
+        }
+      } catch {
+        // A network outage is handled by the reconnect path below.
       }
       if (event.code === 4429) {
         setConnection("Server busy", "error");
@@ -122,19 +158,23 @@
         viewOnly = Boolean(message.viewOnly);
         clipboardEnabled = Boolean(message.clipboard);
         modeInfo.textContent = viewOnly ? "View only" : "Control enabled";
-        clipboardButton.disabled = !clipboardEnabled;
+        configureClipboardAccess();
         populateScreens(message.screens, message.monitor);
         break;
       case "screen":
         screenInfo.textContent = `${message.name} · ${message.width} × ${message.height}`;
         break;
       case "clipboard":
-        clipboardText.value = message.text || "";
+        handleServerClipboard(message);
+        break;
+      case "clipboard_unchanged":
+        if (message.digest) lastServerClipboardDigest = message.digest;
         break;
       case "clipboard_saved":
-        showToast("Remote clipboard updated.");
+        handleClipboardSaved(message);
         break;
       case "error":
+        if (message.requestId) clipboardWriteOrigins.delete(message.requestId);
         showToast(message.message || "Remote operation failed.");
         break;
       case "fatal":
@@ -157,6 +197,273 @@
       monitorSelect.append(option);
     }
     monitorSelect.disabled = monitorSelect.options.length < 2;
+  }
+
+  function clipboardApiAvailable() {
+    return Boolean(
+      window.isSecureContext
+      && navigator.clipboard
+      && typeof navigator.clipboard.readText === "function"
+      && typeof navigator.clipboard.writeText === "function"
+    );
+  }
+
+  function readClipboardPreference() {
+    try {
+      return window.localStorage.getItem(CLIPBOARD_SYNC_STORAGE_KEY) === "true";
+    } catch {
+      return false;
+    }
+  }
+
+  function writeClipboardPreference(enabled) {
+    try {
+      window.localStorage.setItem(CLIPBOARD_SYNC_STORAGE_KEY, String(enabled));
+    } catch {
+      // Private browsing modes may make local storage unavailable.
+    }
+  }
+
+  function showClipboardNotice(message) {
+    if (clipboardNoticeShown) return;
+    clipboardNoticeShown = true;
+    showToast(message);
+  }
+
+  async function observeClipboardPermission() {
+    if (clipboardPermissionObserved || !navigator.permissions?.query) return;
+    clipboardPermissionObserved = true;
+    try {
+      const permission = await navigator.permissions.query({ name: "clipboard-read" });
+      permission.addEventListener("change", () => {
+        if (permission.state === "denied" && clipboardSyncActive) {
+          disableClipboardSync("Clipboard permission was revoked.");
+        }
+      });
+    } catch {
+      // Firefox and Safari do not expose Chromium's clipboard permission names.
+    }
+  }
+
+  async function requestClipboardAccess(notifyFailure) {
+    if (!clipboardApiAvailable()) {
+      if (notifyFailure) {
+        showClipboardNotice("Automatic clipboard sync requires HTTPS or localhost.");
+      }
+      return { ok: false, text: "" };
+    }
+    await observeClipboardPermission();
+    try {
+      const text = await navigator.clipboard.readText();
+      clipboardNoticeShown = false;
+      return { ok: true, text };
+    } catch {
+      if (notifyFailure) {
+        showClipboardNotice("Allow clipboard access to enable automatic sync.");
+      }
+      return { ok: false, text: "" };
+    }
+  }
+
+  async function configureClipboardAccess() {
+    stopClipboardSyncRuntime();
+    clipboardButton.disabled = !clipboardEnabled;
+    clipboardSyncToggle.checked = readClipboardPreference();
+
+    if (!clipboardEnabled) {
+      clipboardSyncToggle.disabled = true;
+      clipboardSyncToggle.checked = false;
+      clipboardSyncControl.title = "Clipboard synchronization is disabled by the server.";
+      return;
+    }
+    if (!clipboardApiAvailable()) {
+      clipboardSyncToggle.disabled = true;
+      clipboardSyncToggle.checked = false;
+      clipboardSyncControl.title = "Automatic sync requires HTTPS or localhost.";
+      showClipboardNotice("Automatic clipboard sync requires HTTPS or localhost.");
+      return;
+    }
+
+    clipboardSyncToggle.disabled = true;
+    clipboardSyncControl.title = "Synchronize plain text while this tab is active.";
+    if (clipboardStartupPermissionAttempted && !clipboardSyncToggle.checked) {
+      clipboardSyncToggle.disabled = false;
+      return;
+    }
+
+    clipboardStartupPermissionAttempted = true;
+    const access = await requestClipboardAccess(true);
+    clipboardSyncToggle.disabled = false;
+    if (!access.ok) {
+      clipboardSyncToggle.checked = false;
+      writeClipboardPreference(false);
+      return;
+    }
+    if (clipboardSyncToggle.checked && socket?.readyState === WebSocket.OPEN) {
+      startClipboardSync(access.text);
+    }
+  }
+
+  function clipboardChangeEventsAvailable() {
+    return Boolean(
+      navigator.clipboard
+      && "onclipboardchange" in navigator.clipboard
+      && typeof navigator.clipboard.addEventListener === "function"
+    );
+  }
+
+  function startClipboardSync(initialClientText) {
+    stopClipboardSyncRuntime();
+    clipboardSyncActive = true;
+    clipboardSyncToggle.checked = true;
+    lastClientClipboard = initialClientText;
+    lastServerClipboard = null;
+    lastServerClipboardDigest = null;
+    serverClipboardBaselinePending = true;
+    clientChangedBeforeServerBaseline = false;
+    pendingServerClipboard = null;
+
+    if (clipboardChangeEventsAvailable()) {
+      navigator.clipboard.addEventListener("clipboardchange", handleClipboardChange);
+      clipboardChangeListening = true;
+    }
+    send({ type: "clipboard_get" });
+    clipboardSyncTimer = window.setInterval(clipboardSyncTick, CLIPBOARD_SYNC_INTERVAL_MS);
+  }
+
+  function stopClipboardSyncRuntime() {
+    window.clearInterval(clipboardSyncTimer);
+    clipboardSyncTimer = null;
+    clipboardSyncActive = false;
+    clipboardSyncBusy = false;
+    applyingServerClipboard = false;
+    pendingServerClipboard = null;
+    lastClientClipboard = null;
+    lastServerClipboard = null;
+    lastServerClipboardDigest = null;
+    serverClipboardBaselinePending = false;
+    clientChangedBeforeServerBaseline = false;
+    clipboardWriteOrigins.clear();
+    if (clipboardChangeListening) {
+      navigator.clipboard.removeEventListener("clipboardchange", handleClipboardChange);
+      clipboardChangeListening = false;
+    }
+  }
+
+  function disableClipboardSync(message) {
+    stopClipboardSyncRuntime();
+    clipboardSyncToggle.checked = false;
+    writeClipboardPreference(false);
+    showClipboardNotice(message);
+  }
+
+  async function handleClipboardChange() {
+    if (applyingServerClipboard) return;
+    await syncClientClipboard();
+  }
+
+  async function clipboardSyncTick(forceClientRead = false) {
+    if (
+      !clipboardSyncActive
+      || socket?.readyState !== WebSocket.OPEN
+      || document.hidden
+      || !document.hasFocus()
+    ) {
+      return;
+    }
+    if (forceClientRead || !clipboardChangeListening) {
+      await syncClientClipboard();
+    }
+    const request = { type: "clipboard_get" };
+    if (lastServerClipboardDigest) request.knownDigest = lastServerClipboardDigest;
+    send(request);
+  }
+
+  async function syncClientClipboard() {
+    if (!clipboardSyncActive || clipboardSyncBusy || applyingServerClipboard) return;
+    clipboardSyncBusy = true;
+    try {
+      const text = await navigator.clipboard.readText();
+      publishClientClipboard(text);
+    } catch {
+      disableClipboardSync("Clipboard read permission is no longer available.");
+    } finally {
+      clipboardSyncBusy = false;
+    }
+  }
+
+  function publishClientClipboard(text) {
+    if (!clipboardSyncActive || text === lastClientClipboard) return;
+    if (serverClipboardBaselinePending) clientChangedBeforeServerBaseline = true;
+    lastClientClipboard = text;
+    lastServerClipboard = text;
+    lastServerClipboardDigest = null;
+    sendClipboardSet(text, "automatic");
+  }
+
+  function sendClipboardSet(text, origin) {
+    const requestId = `clipboard-${++clipboardRequestSequence}`;
+    if (send({ type: "clipboard_set", text, requestId })) {
+      clipboardWriteOrigins.set(requestId, origin);
+    }
+  }
+
+  function handleClipboardSaved(message) {
+    if (message.digest) lastServerClipboardDigest = message.digest;
+    const origin = clipboardWriteOrigins.get(message.requestId);
+    if (message.requestId) clipboardWriteOrigins.delete(message.requestId);
+    if (origin !== "automatic") showToast("Remote clipboard updated.");
+  }
+
+  function handleServerClipboard(message) {
+    const text = typeof message.text === "string" ? message.text : "";
+    clipboardText.value = text;
+    if (!clipboardSyncActive) return;
+
+    if (serverClipboardBaselinePending) {
+      serverClipboardBaselinePending = false;
+      if (clientChangedBeforeServerBaseline) {
+        lastServerClipboard = lastClientClipboard;
+        lastServerClipboardDigest = null;
+        return;
+      }
+      lastServerClipboard = text;
+      lastServerClipboardDigest = message.digest || null;
+      return;
+    }
+    if (text === lastServerClipboard || text === lastClientClipboard) {
+      lastServerClipboard = text;
+      lastServerClipboardDigest = message.digest || lastServerClipboardDigest;
+      return;
+    }
+    pendingServerClipboard = { text, digest: message.digest || null };
+    flushPendingServerClipboard();
+  }
+
+  async function flushPendingServerClipboard() {
+    if (serverClipboardWriteRunning) return;
+    serverClipboardWriteRunning = true;
+    try {
+      while (pendingServerClipboard && clipboardSyncActive) {
+        const next = pendingServerClipboard;
+        pendingServerClipboard = null;
+        try {
+          applyingServerClipboard = true;
+          await navigator.clipboard.writeText(next.text);
+          lastClientClipboard = next.text;
+          lastServerClipboard = next.text;
+          lastServerClipboardDigest = next.digest;
+          clipboardNoticeShown = false;
+        } catch {
+          disableClipboardSync("Browser clipboard write permission is no longer available.");
+          return;
+        } finally {
+          applyingServerClipboard = false;
+        }
+      }
+    } finally {
+      serverClipboardWriteRunning = false;
+    }
   }
 
   function showFrame(blob) {
@@ -308,8 +615,13 @@
   }
 
   window.addEventListener("blur", () => releaseLocalState(true));
+  window.addEventListener("focus", () => clipboardSyncTick(true));
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) releaseLocalState(true);
+    if (document.hidden) {
+      releaseLocalState(true);
+    } else {
+      clipboardSyncTick(true);
+    }
   });
 
   monitorSelect.addEventListener("change", () => {
@@ -339,6 +651,23 @@
     }
   });
 
+  clipboardSyncToggle.addEventListener("change", async () => {
+    if (!clipboardSyncToggle.checked) {
+      writeClipboardPreference(false);
+      stopClipboardSyncRuntime();
+      return;
+    }
+    const access = await requestClipboardAccess(true);
+    if (!access.ok) {
+      clipboardSyncToggle.checked = false;
+      writeClipboardPreference(false);
+      return;
+    }
+    writeClipboardPreference(true);
+    startClipboardSync(access.text);
+    showToast("Automatic clipboard sync enabled.");
+  });
+
   clipboardButton.addEventListener("click", () => {
     clipboardDialog.showModal();
     send({ type: "clipboard_get" });
@@ -347,7 +676,7 @@
     send({ type: "clipboard_get" });
   });
   document.querySelector("#clipboard-write").addEventListener("click", () => {
-    send({ type: "clipboard_set", text: clipboardText.value });
+    sendClipboardSet(clipboardText.value, "manual");
   });
   document.querySelector("#clipboard-paste-local").addEventListener("click", async () => {
     try {
@@ -359,6 +688,7 @@
   document.querySelector("#clipboard-copy-local").addEventListener("click", async () => {
     try {
       await navigator.clipboard.writeText(clipboardText.value);
+      publishClientClipboard(clipboardText.value);
       showToast("Copied to the browser clipboard.");
     } catch {
       showToast("Browser clipboard access was denied.");
@@ -366,5 +696,6 @@
   });
 
   window.setInterval(() => send({ type: "ping" }), 15000);
+  clipboardSyncToggle.checked = readClipboardPreference();
   connect();
 })();

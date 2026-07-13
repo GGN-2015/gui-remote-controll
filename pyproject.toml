@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "gui-remote-controll"
-version = "0.1.0"
+version = "0.1.1"
 description = "Cross-platform remote desktop control from a web browser."
 authors = [{ name = "GGN_2015" }]
 license = "MIT"
@@ -52,6 +52,7 @@ gui-remote-controll = "gui_remote_controll.__main__:main"
 [tool.poetry]
 packages = [{ include = "gui_remote_controll" }]
 include = [
+    "CHANGELOG.md",
     "gui_remote_controll/static/*",
     "README.zh-CN.md",
     "SECURITY.md",

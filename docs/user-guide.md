@@ -164,14 +164,49 @@ handles repetition for a held key.
 
 Clipboard synchronization handles plain text only.
 
+### Automatic synchronization
+
+The **Auto sync** switch maintains a bidirectional clipboard bridge while the browser tab is
+visible and focused. It is off by default and the preference is stored in browser local storage.
+
+When the remote session opens, the page immediately requests browser clipboard read access.
+Some browsers only allow the prompt after a user gesture; enabling **Auto sync** retries the
+request from the switch interaction. The page does not perform a no-op write to request write
+access because that could destroy non-text formats in an existing clipboard item. Write access
+is exercised only when a remote text change actually needs to be applied.
+
+The first successful enable reads both clipboards as independent baselines and does not overwrite
+either side. After that:
+
+- a client clipboard change replaces the server clipboard;
+- a server clipboard change replaces the client clipboard;
+- a client change detected while the initial server baseline is still arriving wins that race;
+- values written by synchronization are recorded before the next check, preventing feedback
+  loops between the two sides;
+- a standard `clipboardchange` event is used when the browser provides it, with polling as the
+  compatibility fallback;
+- polling pauses while the page is hidden or unfocused and resumes when focus returns;
+- the client sends the last server-content digest, so unchanged polls do not retransmit the
+  complete clipboard text.
+
+Async Clipboard access is restricted to secure browser contexts. Automatic synchronization is
+therefore available over HTTPS and on trusted localhost origins. A plain LAN URL such as
+`http://192.168.1.10:8000` cannot receive this permission in conforming browsers; configure TLS
+or an HTTPS reverse proxy for automatic synchronization across LAN devices.
+
+Clipboard permission can be revoked in browser site settings. The switch turns off and reports
+the failed permission when a later read or write is denied.
+
+### Manual clipboard controls
+
 1. Open **Clipboard**.
 2. Choose **Read remote** to load text from the server computer.
 3. Edit the text if needed.
 4. Choose **Write remote** to replace the server clipboard.
 
-**Paste local** and **Copy local** access the browser-side clipboard. Browsers generally require
-HTTPS or localhost and may show a permission prompt. The manual textarea remains usable when the
-browser clipboard API is unavailable.
+**Paste local** and **Copy local** access the browser-side clipboard. The manual textarea remains
+usable when the browser Clipboard API is unavailable, but the user must paste or copy through
+the browser/operating-system UI.
 
 Use `--no-clipboard` to disable all server clipboard reads and writes. Linux requires an
 available `pyperclip` backend, commonly `xclip` or `xsel` on X11. Clipboard messages are limited

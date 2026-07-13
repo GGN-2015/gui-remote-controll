@@ -24,6 +24,11 @@
           <button type="button" id="fit-button" aria-pressed="true">Fit</button>
           <button type="button" id="actual-button" aria-pressed="false">1:1</button>
         </div>
+        <label class="sync-control" id="clipboard-sync-control">
+          <input id="clipboard-sync-toggle" type="checkbox" role="switch" disabled>
+          <span class="switch-track" aria-hidden="true"></span>
+          <span>Auto sync</span>
+        </label>
         <button type="button" id="clipboard-button" disabled>Clipboard</button>
         <button type="button" id="fullscreen-button">Fullscreen</button>
         <form action="/logout" method="post">

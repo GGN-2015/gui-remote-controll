@@ -48,6 +48,16 @@ def test_health_and_security_headers() -> None:
         assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
 
 
+def test_control_ui_contains_automatic_clipboard_sync() -> None:
+    with TestClient(create_app(backend_factory=FakeBackend)) as client:
+        page = client.get("/")
+        script = client.get("/static/app.js")
+    assert 'id="clipboard-sync-toggle"' in page.text
+    assert "requestClipboardAccess" in script.text
+    assert "clipboardchange" in script.text
+    assert "knownDigest" in script.text
+
+
 def test_pin_login_sets_cookie_and_unlocks_home() -> None:
     app = create_app(Settings(pin="2468"), backend_factory=FakeBackend)
     with TestClient(app, follow_redirects=False) as client:
@@ -69,11 +79,32 @@ def test_websocket_sends_hello_metadata_and_binary_frame() -> None:
         hello = websocket.receive_json()
         screen = websocket.receive_json()
         frame = websocket.receive_bytes()
+        websocket.send_json({"type": "clipboard_get"})
+        clipboard = websocket.receive_json()
+        websocket.send_json(
+            {"type": "clipboard_get", "knownDigest": clipboard["digest"]}
+        )
+        unchanged = websocket.receive_json()
+        websocket.send_json(
+            {
+                "type": "clipboard_set",
+                "text": "client text",
+                "requestId": "request-1",
+            }
+        )
+        saved = websocket.receive_json()
     assert hello["type"] == "hello"
     assert hello["protocol"] == 1
     assert len(hello["screens"]) == 2
     assert screen["type"] == "screen"
     assert frame.startswith(b"\xff\xd8")
+    assert clipboard["text"] == "remote text"
+    assert unchanged == {
+        "type": "clipboard_unchanged",
+        "digest": clipboard["digest"],
+    }
+    assert saved["type"] == "clipboard_saved"
+    assert saved["requestId"] == "request-1"
 
 
 def test_cross_origin_websocket_is_rejected() -> None:

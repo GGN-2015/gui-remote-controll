@@ -38,4 +38,16 @@ def test_invalid_messages_are_rejected(payload: object) -> None:
 
 def test_text_and_clipboard_share_size_limit() -> None:
     assert validate({"type": "text", "text": "hello"})["text"] == "hello"
-    assert validate({"type": "clipboard_set", "text": "world"})["text"] == "world"
+    clipboard_set = validate(
+        {"type": "clipboard_set", "text": "world", "requestId": "request-1"}
+    )
+    assert clipboard_set["text"] == "world"
+    assert clipboard_set["requestId"] == "request-1"
+
+
+def test_clipboard_get_accepts_a_known_digest() -> None:
+    message = validate({"type": "clipboard_get", "knownDigest": "0123456789abcdef"})
+    assert message == {
+        "type": "clipboard_get",
+        "knownDigest": "0123456789abcdef",
+    }

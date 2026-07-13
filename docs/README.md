@@ -11,6 +11,7 @@ unless you are looking for a specific command-line option or implementation deta
 | [Platform support](platform-support.md) | Windows, Linux/X11 desktop environments, Wayland limitations, macOS permissions, and platform troubleshooting. |
 | [Development and release](development.md) | Local setup, repository layout, tests, linting, CI, building, artifact inspection, and PyPI release steps. |
 | [Security policy](../SECURITY.md) | Threat model, operational requirements, and vulnerability reporting. |
+| [Changelog](../CHANGELOG.md) | User-visible changes by package version. |
 
 ## Support boundary
 

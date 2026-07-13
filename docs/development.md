@@ -122,7 +122,7 @@ dist/gui_remote_controll-VERSION.tar.gz
 
 The wheel must contain all Python modules and the six files in
 `gui_remote_controll/static/`. The source distribution must also contain the root readmes,
-security policy, and `docs/` manuals.
+changelog, security policy, and `docs/` manuals.
 
 Useful checks on Windows PowerShell:
 

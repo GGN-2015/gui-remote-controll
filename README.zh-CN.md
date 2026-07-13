@@ -49,6 +49,7 @@ GUI Remote Controll 可以把 Windows、Linux 或 macOS 桌面共享到浏览器
 - [架构、算法与协议手册](docs/architecture-and-algorithms.md)
 - [平台支持手册](docs/platform-support.md)
 - [开发与发布手册](docs/development.md)
+- [版本变更记录](CHANGELOG.md)
 - [安全策略](SECURITY.md)
 
 Python 导入包名为 `gui_remote_controll`；PyPI 分发包和命令名沿用仓库拼写
