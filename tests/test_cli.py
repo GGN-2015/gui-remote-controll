@@ -8,11 +8,23 @@ from gui_remote_controll import __main__ as cli
 def test_parser_matches_documented_defaults() -> None:
     args = cli.build_parser().parse_args(["--no-elevate"])
     settings = cli.settings_from_args(args)
+    assert settings.title == "GUI Remote Controll"
     assert settings.host == "0.0.0.0"
     assert settings.port == 8000
     assert settings.fps == 10
     assert settings.monitor == 1
     assert settings.clipboard_enabled
+
+
+def test_custom_client_title() -> None:
+    args = cli.build_parser().parse_args(["--title", "Lab workstation", "--no-elevate"])
+    assert cli.settings_from_args(args).title == "Lab workstation"
+
+
+def test_empty_client_title_is_rejected() -> None:
+    args = cli.build_parser().parse_args(["--title", "   ", "--no-elevate"])
+    with pytest.raises(ValueError, match="title"):
+        cli.settings_from_args(args)
 
 
 def test_invalid_frame_rate_is_rejected() -> None:

@@ -25,12 +25,17 @@ class Settings:
     login_window_seconds: int = 60
     trusted_origins: tuple[str, ...] = ()
     tls_enabled: bool = False
+    title: str = "GUI Remote Controll"
 
     @property
     def frame_interval(self) -> float:
         return 1.0 / self.fps
 
     def validate(self) -> None:
+        if not self.title.strip():
+            raise ValueError("title must not be empty")
+        if len(self.title) > 200:
+            raise ValueError("title must not exceed 200 characters")
         if not self.host:
             raise ValueError("host must not be empty")
         if not 1 <= self.port <= 65535:

@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "gui-remote-controll"
-version = "0.1.1"
+version = "0.1.2"
 description = "Cross-platform remote desktop control from a web browser."
 authors = [{ name = "GGN_2015" }]
 license = "MIT"

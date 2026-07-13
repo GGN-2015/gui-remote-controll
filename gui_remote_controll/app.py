@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import html
 import json
 import platform
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,13 +15,14 @@ from typing import Any, Protocol
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from fastapi import FastAPI, Request, WebSocket
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.websockets import WebSocketDisconnect
 
 from . import __version__
 from .auth import LoginLimiter, PinAuth
 from .config import Settings
 from .desktop import DesktopBackend, DesktopUnavailableError, Frame, Screen
+from .ime import ImeState
 from .protocol import ProtocolError, validate_client_message
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -28,10 +32,17 @@ STATIC_FILES = {
     "auth.css",
     "auth.js",
 }
+LOCAL_INPUT_HOLD_SECONDS = 0.8
+REMOTE_INPUT_TYPES = {"pointer", "wheel", "key", "text"}
 
 
 class Backend(Protocol):
+    local_input_monitoring: bool
+    local_input_monitoring_detail: str
+
     def initialize(self) -> None: ...
+
+    def set_local_input_callback(self, callback: Callable[[], None]) -> None: ...
 
     def list_screens(self) -> tuple[Screen, ...]: ...
 
@@ -45,11 +56,81 @@ class Backend(Protocol):
 
     def clipboard_set(self, text: str) -> None: ...
 
+    def ime_status(self) -> ImeState: ...
+
+    def ime_set(self, enabled: bool) -> ImeState: ...
+
+    def shutdown(self) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ControlState:
+    state: str
+    reason: str
+    detail: str
+
+    def as_message(self) -> dict[str, str]:
+        return {"state": self.state, "reason": self.reason, "detail": self.detail}
+
+
+class ControlArbiter:
+    """Give physical input a short exclusive lease over remote input injection."""
+
+    def __init__(self, *, view_only: bool, hold_seconds: float = LOCAL_INPUT_HOLD_SECONDS) -> None:
+        self.view_only = view_only
+        self.hold_seconds = hold_seconds
+        self._lock = threading.RLock()
+        self._local_active_until = 0.0
+        self._monitoring_available = False
+        self._monitoring_detail = "Local input monitoring has not started."
+
+    def record_local_input(self) -> None:
+        with self._lock:
+            self._local_active_until = max(
+                self._local_active_until,
+                time.monotonic() + self.hold_seconds,
+            )
+
+    def set_monitoring(self, available: bool, detail: str) -> None:
+        with self._lock:
+            self._monitoring_available = available
+            self._monitoring_detail = detail
+
+    def snapshot(self) -> ControlState:
+        with self._lock:
+            return self._snapshot_locked()
+
+    def execute_remote(self, operation: Callable[[], None]) -> bool:
+        with self._lock:
+            if self._snapshot_locked().state != "available":
+                return False
+            operation()
+            return True
+
+    def _snapshot_locked(self) -> ControlState:
+        if self.view_only:
+            return ControlState("restricted", "view_only", "The server is in view-only mode.")
+        if not self._monitoring_available:
+            return ControlState("restricted", "monitor_unavailable", self._monitoring_detail)
+        if time.monotonic() < self._local_active_until:
+            return ControlState(
+                "local_active",
+                "local_input",
+                "Physical input on the server has priority.",
+            )
+        return ControlState("available", "remote_allowed", "Remote input is allowed.")
+
 
 class BackendManager:
-    def __init__(self, settings: Settings, factory: Callable[[Settings], Backend]) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        factory: Callable[[Settings], Backend],
+        arbiter: ControlArbiter,
+    ) -> None:
         self.settings = settings
         self.factory = factory
+        self.arbiter = arbiter
         self._backend: Backend | None = None
         self._lock = asyncio.Lock()
 
@@ -57,9 +138,31 @@ class BackendManager:
         async with self._lock:
             if self._backend is None:
                 backend = self.factory(self.settings)
+                callback_setter = getattr(backend, "set_local_input_callback", None)
+                if callable(callback_setter):
+                    callback_setter(self.arbiter.record_local_input)
                 await asyncio.to_thread(backend.initialize)
                 self._backend = backend
+                self.refresh_monitoring(backend)
             return self._backend
+
+    def refresh_monitoring(self, backend: Backend) -> None:
+        available = bool(getattr(backend, "local_input_monitoring", False))
+        detail = str(
+            getattr(
+                backend,
+                "local_input_monitoring_detail",
+                "The desktop backend cannot monitor physical input.",
+            )
+        )
+        self.arbiter.set_monitoring(available, detail)
+
+    async def close(self) -> None:
+        if self._backend is None:
+            return
+        shutdown = getattr(self._backend, "shutdown", None)
+        if callable(shutdown):
+            await asyncio.to_thread(shutdown)
 
 
 class ConnectionGate:
@@ -97,20 +200,28 @@ def create_app(
     runtime.validate()
     auth = PinAuth(runtime)
     limiter = LoginLimiter(runtime.login_attempts, runtime.login_window_seconds)
-    backend_manager = BackendManager(runtime, backend_factory)
+    arbiter = ControlArbiter(view_only=runtime.view_only)
+    backend_manager = BackendManager(runtime, backend_factory, arbiter)
     gate = ConnectionGate(runtime.max_clients)
 
+    @contextlib.asynccontextmanager
+    async def lifespan(_: FastAPI) -> Any:
+        yield
+        await backend_manager.close()
+
     app = FastAPI(
-        title="GUI Remote Controll",
+        title=runtime.title,
         version=__version__,
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        lifespan=lifespan,
     )
     app.state.settings = runtime
     app.state.auth = auth
     app.state.backend_manager = backend_manager
     app.state.connection_gate = gate
+    app.state.control_arbiter = arbiter
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next: Callable[..., Any]) -> Response:
@@ -136,13 +247,13 @@ def create_app(
     async def index(request: Request) -> Response:
         if not auth.is_allowed(request):
             return RedirectResponse("/auth?next=%2F", status_code=303)
-        return FileResponse(STATIC_DIR / "index.html")
+        return _html_page("index.html", runtime.title)
 
     @app.get("/auth")
     async def auth_page(request: Request) -> Response:
         if not auth.enabled or auth.is_allowed(request):
             return RedirectResponse("/", status_code=303)
-        return FileResponse(STATIC_DIR / "auth.html")
+        return _html_page("auth.html", runtime.title)
 
     @app.post("/auth")
     async def authenticate(request: Request) -> Response:
@@ -180,9 +291,11 @@ def create_app(
         return JSONResponse(
             {
                 "version": __version__,
+                "title": runtime.title,
                 "platform": platform.system(),
                 "viewOnly": runtime.view_only,
                 "clipboard": runtime.clipboard_enabled,
+                "control": arbiter.snapshot().as_message(),
                 "clients": gate.active,
                 "maxClients": runtime.max_clients,
             }
@@ -218,19 +331,24 @@ def create_app(
                 screens = await asyncio.to_thread(backend.list_screens)
                 screen = _select_screen(screens, runtime.monitor)
                 state = ClientState(screens=screens, screen=screen)
+                ime_state = await asyncio.to_thread(backend.ime_status)
             except DesktopUnavailableError as exc:
                 await websocket.send_json({"type": "fatal", "message": str(exc)})
                 await websocket.close(code=4500, reason="Desktop unavailable")
                 return
 
             send_lock = asyncio.Lock()
+            initial_control_state = arbiter.snapshot()
             await websocket.send_json(
                 {
                     "type": "hello",
                     "protocol": 1,
+                    "title": runtime.title,
                     "platform": platform.system(),
                     "viewOnly": runtime.view_only,
                     "clipboard": runtime.clipboard_enabled,
+                    "control": initial_control_state.as_message(),
+                    "ime": ime_state.as_message(),
                     "screens": [item.as_message() for item in screens],
                     "monitor": screen.index,
                 }
@@ -239,10 +357,22 @@ def create_app(
                 _stream_frames(websocket, backend, state, runtime, send_lock)
             )
             receive_task = asyncio.create_task(
-                _receive_messages(websocket, backend, state, runtime, send_lock)
+                _receive_messages(websocket, backend, state, runtime, send_lock, arbiter)
+            )
+            control_task = asyncio.create_task(
+                _stream_control_state(
+                    websocket,
+                    backend,
+                    backend_manager,
+                    state,
+                    send_lock,
+                    arbiter,
+                    initial_control_state,
+                )
             )
             done, pending = await asyncio.wait(
-                {stream_task, receive_task}, return_when=asyncio.FIRST_COMPLETED
+                {stream_task, receive_task, control_task},
+                return_when=asyncio.FIRST_COMPLETED,
             )
             for task in pending:
                 task.cancel()
@@ -254,7 +384,7 @@ def create_app(
             pass
         finally:
             if backend is not None and state is not None:
-                await asyncio.to_thread(backend.release_inputs, state.keys, state.buttons)
+                await _release_client_inputs(backend, state)
             await gate.leave()
             with contextlib.suppress(RuntimeError):
                 await websocket.close()
@@ -291,12 +421,35 @@ async def _stream_frames(
         await asyncio.sleep(max(0.001, settings.frame_interval - elapsed))
 
 
+async def _stream_control_state(
+    websocket: WebSocket,
+    backend: Backend,
+    backend_manager: BackendManager,
+    state: ClientState,
+    send_lock: asyncio.Lock,
+    arbiter: ControlArbiter,
+    initial_state: ControlState,
+) -> None:
+    previous = initial_state
+    while True:
+        backend_manager.refresh_monitoring(backend)
+        current = arbiter.snapshot()
+        if current != previous:
+            if current.state != "available":
+                await _release_client_inputs(backend, state)
+            async with send_lock:
+                await websocket.send_json({"type": "control_state", **current.as_message()})
+            previous = current
+        await asyncio.sleep(0.05 if current.state == "local_active" else 0.15)
+
+
 async def _receive_messages(
     websocket: WebSocket,
     backend: Backend,
     state: ClientState,
     settings: Settings,
     send_lock: asyncio.Lock,
+    arbiter: ControlArbiter,
 ) -> None:
     while True:
         raw = await websocket.receive_text()
@@ -335,9 +488,7 @@ async def _receive_messages(
                 digest = _clipboard_digest(text)
                 async with send_lock:
                     if message["knownDigest"] == digest:
-                        await websocket.send_json(
-                            {"type": "clipboard_unchanged", "digest": digest}
-                        )
+                        await websocket.send_json({"type": "clipboard_unchanged", "digest": digest})
                     else:
                         await websocket.send_json(
                             {"type": "clipboard", "text": text, "digest": digest}
@@ -367,24 +518,81 @@ async def _receive_messages(
                     request_id=message["requestId"],
                 )
             continue
-        if settings.view_only:
+        if message_type == "ime_set":
+            if arbiter.snapshot().state != "available":
+                await _send_control_state(websocket, send_lock, arbiter.snapshot())
+                continue
+            try:
+                ime_state = await asyncio.to_thread(backend.ime_set, message["enabled"])
+                async with send_lock:
+                    await websocket.send_json({"type": "ime_state", **ime_state.as_message()})
+            except DesktopUnavailableError as exc:
+                await _send_error(websocket, send_lock, str(exc))
+            continue
+        if message_type not in REMOTE_INPUT_TYPES:
+            continue
+        if message_type == "key" and message["event"] == "down" and message["repeat"]:
+            continue
+        tracked_key = message_type == "key" and message["event"] == "down"
+        tracked_button = message_type == "pointer" and message["event"] == "down"
+        if tracked_key:
+            state.keys.add(message["key"])
+        elif tracked_button:
+            state.buttons.add(message["button"])
+        try:
+            allowed = await asyncio.to_thread(
+                _execute_remote_message,
+                arbiter,
+                backend,
+                message,
+                state.screen,
+            )
+        except DesktopUnavailableError as exc:
+            if tracked_key:
+                state.keys.discard(message["key"])
+            elif tracked_button:
+                state.buttons.discard(message["button"])
+            await _send_error(websocket, send_lock, str(exc))
+            continue
+        if not allowed:
+            if tracked_key:
+                state.keys.discard(message["key"])
+            elif tracked_button:
+                state.buttons.discard(message["button"])
+            await _send_control_state(websocket, send_lock, arbiter.snapshot())
             continue
         if message_type == "key":
-            if message["event"] == "down":
-                state.keys.add(message["key"])
-                if message["repeat"]:
-                    continue
-            else:
+            if message["event"] == "up":
                 state.keys.discard(message["key"])
-        elif message_type == "pointer" and message["event"] != "move":
-            if message["event"] == "down":
-                state.buttons.add(message["button"])
-            else:
-                state.buttons.discard(message["button"])
-        try:
-            await asyncio.to_thread(backend.execute, message, state.screen)
-        except DesktopUnavailableError as exc:
-            await _send_error(websocket, send_lock, str(exc))
+        elif message_type == "pointer" and message["event"] == "up":
+            state.buttons.discard(message["button"])
+
+
+def _execute_remote_message(
+    arbiter: ControlArbiter,
+    backend: Backend,
+    message: dict[str, Any],
+    screen: Screen,
+) -> bool:
+    return arbiter.execute_remote(lambda: backend.execute(message, screen))
+
+
+async def _release_client_inputs(backend: Backend, state: ClientState) -> None:
+    keys = set(state.keys)
+    buttons = set(state.buttons)
+    state.keys.clear()
+    state.buttons.clear()
+    if keys or buttons:
+        await asyncio.to_thread(backend.release_inputs, keys, buttons)
+
+
+async def _send_control_state(
+    websocket: WebSocket,
+    lock: asyncio.Lock,
+    state: ControlState,
+) -> None:
+    async with lock:
+        await websocket.send_json({"type": "control_state", **state.as_message()})
 
 
 async def _send_error(
@@ -403,6 +611,12 @@ async def _send_error(
 
 def _clipboard_digest(text: str) -> str:
     return hashlib.blake2b(text.encode("utf-8"), digest_size=8).hexdigest()
+
+
+def _html_page(filename: str, title: str) -> HTMLResponse:
+    template = (STATIC_DIR / filename).read_text(encoding="utf-8")
+    content = template.replace("{{APP_TITLE}}", html.escape(title))
+    return HTMLResponse(content.replace("{{APP_VERSION}}", __version__))
 
 
 def _select_screen(screens: tuple[Screen, ...], preferred: int) -> Screen:

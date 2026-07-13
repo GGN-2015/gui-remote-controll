@@ -19,11 +19,12 @@ Python 3.10 or newer is required.
 2. Start a PIN-protected server:
 
    ```console
-   gui-remote-controll --pin 123456
+   gui-remote-controll --pin 123456 --title "Office workstation"
    ```
 
    Startup requests administrator/root privileges once. Use `--no-elevate` only when the
    desktop permissions have already been configured or elevation is inappropriate.
+   Omit `--title` to use `GUI Remote Controll`.
 
 3. Open the control page:
 

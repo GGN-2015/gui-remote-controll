@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.2
+
+- Add `--title` with the default client title `GUI Remote Controll`.
+- Add native server IME status and enable/disable controls for Windows, Linux, and macOS.
+- Monitor physical server input and temporarily suspend remote input injection while it is active.
+- Filter injected `pynput` events so remote operations do not trigger the physical-input lease.
+- Add a WebSocket-driven three-state remote-control permission indicator.
+- Release remotely held keys and buttons whenever physical input takes priority.
+- Version static asset URLs so upgraded browser clients cannot reuse stale JavaScript or CSS.
+
 ## 0.1.1
 
 - Add opt-in bidirectional automatic clipboard synchronization.

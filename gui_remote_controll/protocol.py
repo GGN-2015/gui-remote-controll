@@ -80,12 +80,16 @@ def validate_client_message(payload: Any, *, max_text_chars: int) -> dict[str, A
             raise ProtocolError("monitor index must be a non-negative integer.")
         return {"type": message_type, "index": index}
 
+    if message_type == "ime_set":
+        enabled = payload.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ProtocolError("enabled must be a boolean.")
+        return {"type": message_type, "enabled": enabled}
+
     if message_type == "clipboard_get":
         return {
             "type": message_type,
-            "knownDigest": _short_string(
-                payload.get("knownDigest", ""), "knownDigest", 64
-            ),
+            "knownDigest": _short_string(payload.get("knownDigest", ""), "knownDigest", 64),
         }
 
     if message_type == "ping":

@@ -27,7 +27,8 @@ flowchart LR
 | `gui_remote_controll.config` | Validated runtime settings and protocol size limits. |
 | `gui_remote_controll.auth` | PIN comparison, signed Cookie tokens, and login attempt limiting. |
 | `gui_remote_controll.protocol` | Strict normalization and validation of client JSON messages. |
-| `gui_remote_controll.desktop` | Screen enumeration/capture, JPEG encoding, input injection, clipboard, DPI, and platform diagnostics. |
+| `gui_remote_controll.desktop` | Screen enumeration/capture, JPEG encoding, input injection/monitoring, clipboard, IME, DPI, and platform diagnostics. |
+| `gui_remote_controll.ime` | Native Windows, Linux, and macOS input method status and switching. |
 | `gui_remote_controll.app` | HTTP routes, security headers, backend lifecycle, connection gate, and WebSocket loops. |
 | `gui_remote_controll.static` | Packaged browser UI with no CDN or runtime frontend dependency. |
 
@@ -39,8 +40,8 @@ flowchart LR
 4. Create the FastAPI application and Uvicorn server.
 5. Serve the login UI, control UI, health endpoint, and static files without opening the desktop.
 6. On the first accepted WebSocket, initialize the shared desktop backend in a worker thread.
-7. Enumerate displays and start one receive loop and one capture loop for the client.
-8. Cancel the peer loop and release held inputs when either loop finishes.
+7. Enumerate displays and start receive, capture, and control-state loops for the client.
+8. Cancel the peer tasks and release held inputs when any loop finishes.
 
 Lazy desktop initialization keeps CLI help, health checks, packaging, and PIN authentication
 usable even when the process is temporarily outside a graphical session.
@@ -140,9 +141,10 @@ Each accepted client has:
 - one `ClientState` with its display selection and held keys/buttons;
 - one frame streaming task;
 - one message receiving task;
+- one control-state streaming task;
 - one lock serializing JSON and binary WebSocket sends.
 
-The first completed task cancels the other. Cleanup decrements the connection counter and asks
+The first completed task cancels the others. Cleanup decrements the connection counter and asks
 the backend to release all inputs still held by that client.
 
 ## Display model
@@ -241,6 +243,56 @@ The backend maps browser named keys to `pynput.keyboard.Key` and single characte
 `KeyCode.from_char`. Repeated keydown messages are not injected again. The native operating
 system provides repeat behavior while the key remains held.
 
+## Physical-input priority state machine
+
+`ControlArbiter` is shared by every WebSocket and uses a process-wide reentrant lock plus a
+monotonic deadline. `pynput` mouse and keyboard listeners report whether an event was injected.
+Only events marked as physical renew the local-input deadline:
+
+```text
+on physical mouse or keyboard event:
+    local_active_until = max(local_active_until, monotonic_now + 0.8 seconds)
+
+if view_only:
+    state = restricted
+else if physical listeners are unavailable:
+    state = restricted
+else if monotonic_now < local_active_until:
+    state = local_active
+else:
+    state = available
+```
+
+The status task samples this state at 150 ms while stable and 50 ms during local activity. It
+sends `control_state` only on transitions. Entering either non-available state clears the
+connection's held-input sets and releases those keys/buttons through the native controller.
+
+Before injecting each `pointer`, `wheel`, `key`, or `text` message, the worker thread acquires the
+arbiter lock and recomputes the state. The backend operation runs under that lock. A physical
+callback that arrives concurrently waits for the already-started native call to finish, then
+immediately establishes the local lease. Messages received after that point are discarded. IME
+operations are also rejected unless the state is `available`.
+
+The browser mirrors the authoritative state but is not the security boundary. It clears its
+held-input state and stops creating input messages whenever permission is lost. A modified client
+that continues sending input is still rejected by the server.
+
+## Input method algorithm
+
+The IME controller always sets an explicit target and queries the resulting state. It never
+simulates a user-configurable keyboard shortcut.
+
+- Windows calls IMM32 against the foreground window's input context and falls back to its default
+  IME window for legacy-compatible applications.
+- Fcitx 4/5 uses the remote command's explicit active/inactive operations.
+- IBus saves a non-XKB engine, chooses an enabled XKB engine as direct input, and restores the
+  saved engine when enabled again.
+- macOS classifies Text Input Sources by the ASCII-capable property, retains the previous
+  non-ASCII source, and selects an enabled/selectable source matching the requested state.
+
+Platform APIs can report that no controllable source exists. That result is sent as an unsupported
+IME capability; a rejected state change becomes a recoverable WebSocket `error`.
+
 ## Clipboard algorithm
 
 Clipboard get/set operations run in worker threads through `pyperclip`. Text is limited to
@@ -293,6 +345,7 @@ Numbers must be finite; booleans are not accepted as numeric values.
 | `monitor` | nonnegative integer `index` | Change this connection's captured display. |
 | `clipboard_get` | optional `knownDigest` | Read server clipboard text, or confirm that a known digest is current. |
 | `clipboard_set` | `text`, optional `requestId` | Replace server clipboard text. |
+| `ime_set` | boolean `enabled` | Enable or disable the server's current input method mode. |
 | `ping` | none | Application-level liveness request. |
 
 Unknown types, invalid ranges, excessive strings, NaN, infinity, and malformed JSON produce an
@@ -304,8 +357,10 @@ JPEG frames are binary messages. All other messages are JSON.
 
 | Type | Important fields | Meaning |
 | --- | --- | --- |
-| `hello` | `protocol`, `platform`, `viewOnly`, `clipboard`, `screens`, `monitor` | Initial capabilities and display list. Current protocol is `1`. |
+| `hello` | `protocol`, `title`, `platform`, `viewOnly`, `clipboard`, `control`, `ime`, `screens`, `monitor` | Initial capabilities, permission state, and display list. Current protocol is `1`. |
 | `screen` | screen fields | Metadata for the binary frames that follow. |
+| `control_state` | `state`, `reason`, `detail` | Authoritative `available`, `local_active`, or `restricted` input permission. |
+| `ime_state` | `supported`, `enabled`, `detail` | Current server input method capability and state. |
 | `clipboard` | `text`, `digest` | Changed or explicitly requested server clipboard text. |
 | `clipboard_unchanged` | `digest` | The supplied server clipboard digest is still current. |
 | `clipboard_saved` | `digest`, optional `requestId` | Confirmation of `clipboard_set`. |
@@ -322,13 +377,13 @@ JPEG frames are binary messages. All other messages are JSON.
 | `GET /auth` | no | Packaged PIN form. |
 | `POST /auth` | rate-limited PIN | Sets the authentication Cookie. |
 | `POST /logout` | no | Deletes the authentication Cookie. |
-| `GET /api/status` | PIN Cookie when enabled | Runtime version, platform, modes, and client counts. |
+| `GET /api/status` | PIN Cookie when enabled | Runtime version, title, platform, control state, modes, and client counts. |
 | `GET /static/{filename}` | no | Serves four allowlisted CSS/JavaScript assets. |
 | `WS /ws` | PIN Cookie and Origin | Screen and control protocol. |
 
 ## Extension points
 
-`create_app` accepts a desktop backend factory. A replacement backend implements initialize,
-screen listing, capture, input execution, input release, and clipboard methods. Tests use this
-boundary to run the full HTTP and WebSocket stack without capturing or controlling a real
-desktop.
+`create_app` accepts a desktop backend factory. A replacement backend implements initialization,
+screen listing, capture, input execution/release, local-input callback/health, clipboard, IME,
+and shutdown methods. Tests use this boundary to run the full HTTP and WebSocket stack without
+capturing or controlling a real desktop.

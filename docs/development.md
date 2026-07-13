@@ -144,7 +144,7 @@ Update both values together. Build and inspect metadata before committing a rele
 ## Release checklist
 
 1. Update the version in both locations.
-2. Review the user, CLI, platform, security, and algorithm manuals.
+2. Review the user, CLI, platform, security, algorithm, and changelog documents.
 3. Run pytest, Ruff, and compileall.
 4. Complete real Windows, Linux/X11, and macOS permission/capture checks where available.
 5. Run `poetry check` and `poetry build`.

@@ -2,12 +2,12 @@
 
 ## Support matrix
 
-| Platform | Screen capture | Input injection | Clipboard | Required session |
-| --- | --- | --- | --- | --- |
-| Windows 10+ | Supported | Supported | Supported | Signed-in interactive desktop |
-| Linux/X11 | Supported | Supported | Supported with a `pyperclip` backend | Signed-in X11 desktop |
-| Linux/native Wayland | Not supported for the full desktop | Not supported globally | Environment-dependent | Use an X11 session instead |
-| macOS | Supported after permission grant | Supported after permission grant | Supported | Signed-in Aqua session |
+| Platform | Screen capture | Input injection/monitoring | IME control | Clipboard | Required session |
+| --- | --- | --- | --- | --- | --- |
+| Windows 10+ | Supported | Supported | Foreground IMM32 context | Supported | Signed-in interactive desktop |
+| Linux/X11 | Supported | Supported | Fcitx 4/5 or IBus | Supported with a `pyperclip` backend | Signed-in X11 desktop |
+| Linux/native Wayland | Not supported for the full desktop | Not supported globally | Environment-dependent | Environment-dependent | Use an X11 session instead |
+| macOS | Supported after permission grant | Supported after Accessibility grant | Text Input Source API | Supported | Signed-in Aqua session |
 
 The application is a user-session remote desktop server. Administrator/root privileges do not
 turn it into a pre-login, lock-screen, secure-desktop, or compositor-level service.
@@ -29,6 +29,16 @@ same coordinate space on monitors with different Windows scaling values.
 
 Monitor positions may be negative. For example, a display to the left of the primary display
 can begin at `x = -1920`. The normalized coordinate algorithm preserves that offset.
+
+### Physical input and IME
+
+Low-level Windows mouse and keyboard hooks distinguish physical events from events injected by
+the server. Physical activity temporarily blocks remote input for every connected client.
+
+The IME button targets the foreground window through IMM32. Modern Text Services Framework-only
+applications, elevated windows above the server's integrity level, console windows, and custom
+controls may expose no compatible input context. In those cases the button is unavailable or the
+requested state can be rejected. The feature does not stop the Windows input service.
 
 ### Security desktop limitation
 
@@ -97,6 +107,30 @@ MSS can merge the X11 system cursor into captured frames. This is enabled by def
 disabled with `--no-cursor`. The capture backend can turn it off automatically when the required
 X11 cursor facilities are unavailable.
 
+### Physical input priority
+
+The X11 `pynput` listeners monitor global mouse and keyboard events and distinguish XTest events
+injected by the controller. If the X server denies listener access, screen streaming can remain
+available but the client is placed in **Control access restricted** because physical-input
+priority cannot be guaranteed.
+
+### Input method control
+
+The server detects input method frameworks in this order:
+
+1. `fcitx5-remote`;
+2. `fcitx-remote`;
+3. `ibus`.
+
+Fcitx uses its explicit inactive/active commands. For IBus, the server records the current
+non-XKB engine, selects an enabled `xkb:*` engine for direct input, and restores the recorded
+engine when IME is turned back on. If no prior engine is recorded, it selects the first enabled
+non-XKB engine reported by `ibus list-engine`.
+
+The command and its desktop-session D-Bus connection must be available to the server process.
+This is another reason to launch from the signed-in X11 session and preserve
+`DBUS_SESSION_BUS_ADDRESS` during elevation.
+
 ### Display diagnostics
 
 - **No X11 DISPLAY:** start from a terminal emulator inside the desktop session and verify
@@ -104,6 +138,8 @@ X11 cursor facilities are unavailable.
 - **Permission denied:** verify `XAUTHORITY` points to the signed-in user's X authority file.
 - **No physical display detected:** ensure the X server exposes at least one active screen.
 - **Clipboard failure:** install or configure a supported `pyperclip` backend.
+- **IME unavailable:** confirm Fcitx or IBus is running and its remote-control command is in
+  `PATH` for the elevated process.
 
 ## Wayland
 
@@ -133,6 +169,17 @@ Python executable itself:
 5. Quit and restart the terminal/application and the server.
 
 The administrator prompt cannot approve these TCC permissions automatically.
+
+### Physical input and IME
+
+Accessibility permission is also required for global physical-input monitoring. `pynput` tags
+the server's generated Quartz events, allowing the priority controller to ignore them while
+reacting to physical mouse and keyboard activity.
+
+IME off selects an enabled, selectable, ASCII-capable Text Input Source. The current non-ASCII
+source is retained in memory and restored when IME is turned on. If the server starts while a
+direct-input source is active, turning IME on selects the first enabled, selectable non-ASCII
+source. This changes the current input source but does not disable macOS input services.
 
 ### Troubleshooting
 

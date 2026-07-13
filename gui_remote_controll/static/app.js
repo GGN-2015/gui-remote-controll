@@ -4,7 +4,10 @@
   const stage = document.querySelector("#desktop-stage");
   const screen = document.querySelector("#screen");
   const inputSink = document.querySelector("#input-sink");
+  const appTitle = document.querySelector("#app-title");
   const connectionState = document.querySelector("#connection-state");
+  const controlPermission = document.querySelector("#control-permission");
+  const controlPermissionLabel = document.querySelector("#control-permission-label");
   const stageMessage = document.querySelector("#stage-message");
   const stageTitle = document.querySelector("#stage-title");
   const stageDetail = document.querySelector("#stage-detail");
@@ -14,6 +17,7 @@
   const fitButton = document.querySelector("#fit-button");
   const actualButton = document.querySelector("#actual-button");
   const fullscreenButton = document.querySelector("#fullscreen-button");
+  const imeButton = document.querySelector("#ime-button");
   const clipboardButton = document.querySelector("#clipboard-button");
   const clipboardSyncControl = document.querySelector("#clipboard-sync-control");
   const clipboardSyncToggle = document.querySelector("#clipboard-sync-toggle");
@@ -29,6 +33,10 @@
   let reconnectDelay = 500;
   let currentFrameUrl = null;
   let viewOnly = false;
+  let canControl = false;
+  let imeSupported = false;
+  let imeEnabled = null;
+  let imeDetail = "IME status is unavailable.";
   let clipboardEnabled = false;
   let composing = false;
   let pendingPointer = null;
@@ -58,6 +66,47 @@
   function setConnection(label, state) {
     connectionState.textContent = label;
     connectionState.dataset.state = state;
+  }
+
+  function setClientTitle(title) {
+    if (typeof title !== "string" || !title) return;
+    document.title = title;
+    appTitle.textContent = title;
+  }
+
+  function updateControlState(control) {
+    const state = ["available", "local_active", "restricted"].includes(control?.state)
+      ? control.state
+      : "restricted";
+    const labels = {
+      available: "Control available",
+      local_active: "Server is operating",
+      restricted: "Control access restricted",
+    };
+    canControl = state === "available" && !viewOnly;
+    controlPermission.dataset.state = state;
+    controlPermissionLabel.textContent = labels[state];
+    controlPermission.title = control?.detail || labels[state];
+    modeInfo.textContent = labels[state];
+    if (!canControl) releaseLocalState(false);
+    refreshImeButton();
+  }
+
+  function updateImeState(ime) {
+    imeSupported = Boolean(ime?.supported);
+    imeEnabled = typeof ime?.enabled === "boolean" ? ime.enabled : null;
+    imeDetail = ime?.detail || "IME status is unavailable.";
+    refreshImeButton();
+  }
+
+  function refreshImeButton() {
+    const known = imeSupported && typeof imeEnabled === "boolean";
+    imeButton.textContent = known ? `IME: ${imeEnabled ? "On" : "Off"}` : "IME unavailable";
+    imeButton.disabled = !canControl || !known;
+    imeButton.setAttribute("aria-pressed", String(Boolean(imeEnabled)));
+    imeButton.title = known
+      ? `${imeDetail}. Activate to turn the server IME ${imeEnabled ? "off" : "on"}.`
+      : imeDetail;
   }
 
   function setStageMessage(title, detail) {
@@ -114,6 +163,10 @@
 
     socket.addEventListener("close", async (event) => {
       releaseLocalState(false);
+      updateControlState({
+        state: "restricted",
+        detail: "The WebSocket connection is closed.",
+      });
       stopClipboardSyncRuntime();
       monitorSelect.disabled = true;
       clipboardButton.disabled = true;
@@ -157,9 +210,18 @@
       case "hello":
         viewOnly = Boolean(message.viewOnly);
         clipboardEnabled = Boolean(message.clipboard);
-        modeInfo.textContent = viewOnly ? "View only" : "Control enabled";
+        setClientTitle(message.title);
+        updateImeState(message.ime);
+        updateControlState(message.control);
         configureClipboardAccess();
         populateScreens(message.screens, message.monitor);
+        break;
+      case "control_state":
+        updateControlState(message);
+        break;
+      case "ime_state":
+        updateImeState(message);
+        showToast(`Server IME turned ${message.enabled ? "on" : "off"}.`);
         break;
       case "screen":
         screenInfo.textContent = `${message.name} · ${message.width} × ${message.height}`;
@@ -175,6 +237,7 @@
         break;
       case "error":
         if (message.requestId) clipboardWriteOrigins.delete(message.requestId);
+        refreshImeButton();
         showToast(message.message || "Remote operation failed.");
         break;
       case "fatal":
@@ -499,19 +562,19 @@
   }
 
   function focusRemoteInput() {
-    if (!viewOnly) {
+    if (canControl) {
       inputSink.focus({ preventScroll: true });
     }
   }
 
   screen.addEventListener("pointermove", (event) => {
-    if (viewOnly) return;
+    if (!canControl) return;
     const point = pointerCoordinates(event);
     if (!point) return;
     pendingPointer = { type: "pointer", event: "move", ...point };
     if (pointerFrame === null) {
       pointerFrame = window.requestAnimationFrame(() => {
-        if (pendingPointer) send(pendingPointer);
+        if (canControl && pendingPointer) send(pendingPointer);
         pendingPointer = null;
         pointerFrame = null;
       });
@@ -519,7 +582,7 @@
   });
 
   screen.addEventListener("pointerdown", (event) => {
-    if (viewOnly) return;
+    if (!canControl) return;
     event.preventDefault();
     focusRemoteInput();
     screen.setPointerCapture(event.pointerId);
@@ -532,7 +595,7 @@
   });
 
   screen.addEventListener("pointerup", (event) => {
-    if (viewOnly) return;
+    if (!canControl) return;
     event.preventDefault();
     const point = pointerCoordinates(event);
     const button = pointerButton(event.button);
@@ -544,7 +607,7 @@
   screen.addEventListener("contextmenu", (event) => event.preventDefault());
   screen.addEventListener("dragstart", (event) => event.preventDefault());
   screen.addEventListener("wheel", (event) => {
-    if (viewOnly) return;
+    if (!canControl) return;
     event.preventDefault();
     const divisor = event.deltaMode === WheelEvent.DOM_DELTA_PIXEL ? 100 : 3;
     send({
@@ -555,7 +618,7 @@
   }, { passive: false });
 
   inputSink.addEventListener("keydown", (event) => {
-    if (viewOnly || event.isComposing || event.key === "Process" || event.key === "Dead") return;
+    if (!canControl || event.isComposing || event.key === "Process" || event.key === "Dead") return;
     const pasteShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v";
     if (pasteShortcut) return;
     const printable = event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey;
@@ -566,7 +629,7 @@
   });
 
   inputSink.addEventListener("keyup", (event) => {
-    if (viewOnly || event.isComposing || event.key === "Process" || event.key === "Dead") return;
+    if (!canControl || event.isComposing || event.key === "Process" || event.key === "Dead") return;
     const pasteShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v";
     if (pasteShortcut) return;
     const keyId = event.code || event.key;
@@ -591,11 +654,16 @@
 
   inputSink.addEventListener("paste", (event) => {
     event.preventDefault();
+    if (!canControl) return;
     const text = event.clipboardData?.getData("text/plain") || "";
     if (text) send({ type: "text", text });
   });
 
   function flushTextInput() {
+    if (!canControl) {
+      inputSink.value = "";
+      return;
+    }
     if (composing || !inputSink.value) return;
     send({ type: "text", text: inputSink.value });
     inputSink.value = "";
@@ -649,6 +717,11 @@
     } catch {
       showToast("Fullscreen is not available.");
     }
+  });
+
+  imeButton.addEventListener("click", () => {
+    if (!canControl || !imeSupported || typeof imeEnabled !== "boolean") return;
+    send({ type: "ime_set", enabled: !imeEnabled });
   });
 
   clipboardSyncToggle.addEventListener("change", async () => {

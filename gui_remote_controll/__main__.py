@@ -20,6 +20,11 @@ def build_parser() -> argparse.ArgumentParser:
         prog="gui-remote-controll",
         description="Share and control this desktop from a web browser.",
     )
+    parser.add_argument(
+        "--title",
+        default="GUI Remote Controll",
+        help="Title shown in the browser client (maximum 200 characters).",
+    )
     parser.add_argument("--host", default="0.0.0.0", help="Server bind host.")
     parser.add_argument("--port", type=int, default=8000, help="Server port.")
     parser.add_argument("--pin", help="Require this PIN before clients can use the server.")
@@ -89,6 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def settings_from_args(args: argparse.Namespace) -> Settings:
     settings = Settings(
+        title=args.title,
         host=args.host,
         port=args.port,
         pin=args.pin,

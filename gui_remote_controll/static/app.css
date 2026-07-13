@@ -92,6 +92,7 @@ select:disabled {
 
 .brand-block {
   flex: 0 1 auto;
+  flex-wrap: wrap;
   gap: 10px;
   min-width: 0;
 }
@@ -140,6 +141,37 @@ h2 {
 .connection-state[data-state="disconnected"]::before,
 .connection-state[data-state="error"]::before {
   background: #c83b35;
+}
+
+.control-permission {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: #4e5652;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.permission-dot {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: #c83b35;
+  box-shadow: 0 0 0 1px #a92d28;
+}
+
+.control-permission[data-state="available"] .permission-dot {
+  background: #008957;
+  box-shadow: 0 0 0 1px #007148;
+}
+
+.control-permission[data-state="local_active"] .permission-dot {
+  background: #d18a00;
+  box-shadow: 0 0 0 1px #a66e00;
 }
 
 .toolbar-actions {
@@ -244,6 +276,16 @@ h2 {
 .sync-control input:focus-visible + .switch-track {
   outline: 3px solid rgba(0, 122, 77, 0.24);
   outline-offset: 2px;
+}
+
+#ime-button {
+  min-width: 92px;
+}
+
+#ime-button[aria-pressed="true"]:not(:disabled) {
+  border-color: #40806a;
+  background: #e8f4ef;
+  color: #075b3c;
 }
 
 .quiet-button {

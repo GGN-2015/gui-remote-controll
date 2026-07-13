@@ -30,3 +30,13 @@ encrypted tunnel so that clipboard data is not exposed in transit.
 Administrator/root elevation increases impact if the service is exposed incorrectly. The server
 requests elevation at most once per startup and supports `--no-elevate`, but operators remain
 responsible for restricting network reachability and choosing a strong PIN.
+
+Physical-input priority is a safety and usability mechanism, not authentication. The server
+rejects remote input while physical activity is detected and releases remotely held inputs, but
+operating-system hook delivery can still be delayed or unavailable. When listeners cannot start,
+remote control is restricted instead of running without local priority. Operators should still
+disconnect or stop the server before performing sensitive local work.
+
+The IME button changes the active input mode of the foreground server application. It does not
+stop an input-method service, and it cannot override secure desktops, higher-integrity windows,
+macOS privacy controls, or compositor policy.

@@ -38,9 +38,7 @@ def test_invalid_messages_are_rejected(payload: object) -> None:
 
 def test_text_and_clipboard_share_size_limit() -> None:
     assert validate({"type": "text", "text": "hello"})["text"] == "hello"
-    clipboard_set = validate(
-        {"type": "clipboard_set", "text": "world", "requestId": "request-1"}
-    )
+    clipboard_set = validate({"type": "clipboard_set", "text": "world", "requestId": "request-1"})
     assert clipboard_set["text"] == "world"
     assert clipboard_set["requestId"] == "request-1"
 
@@ -51,3 +49,12 @@ def test_clipboard_get_accepts_a_known_digest() -> None:
         "type": "clipboard_get",
         "knownDigest": "0123456789abcdef",
     }
+
+
+def test_ime_set_requires_boolean_state() -> None:
+    assert validate({"type": "ime_set", "enabled": False}) == {
+        "type": "ime_set",
+        "enabled": False,
+    }
+    with pytest.raises(ProtocolError, match="boolean"):
+        validate({"type": "ime_set", "enabled": "false"})

@@ -18,11 +18,12 @@ GUI Remote Controll 可以把 Windows、Linux 或 macOS 桌面共享到浏览器
 2. 启动带 PIN 保护的服务器：
 
    ```console
-   gui-remote-controll --pin 123456
+   gui-remote-controll --pin 123456 --title "办公室工作站"
    ```
 
    程序默认只请求一次管理员/root 权限。只有在已经单独配置桌面权限，或当前环境不适合提权
    时，才使用 `--no-elevate`。
+   省略 `--title` 时，客户端标题为 `GUI Remote Controll`。
 
 3. 打开控制页面：
 

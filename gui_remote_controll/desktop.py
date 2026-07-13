@@ -4,11 +4,13 @@ import io
 import os
 import platform
 import threading
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from typing import Any
 
 from .config import Settings
+from .ime import ImeControlError, ImeController, ImeState
 
 
 class DesktopUnavailableError(RuntimeError):
@@ -50,6 +52,11 @@ class DesktopBackend:
         self._keyboard_key: Any = None
         self._keyboard_key_code: Any = None
         self._pyperclip: Any = None
+        self._mouse_listener: Any = None
+        self._keyboard_listener: Any = None
+        self._local_input_callback: Callable[[], None] | None = None
+        self._input_monitoring_error = "Local input monitoring has not started."
+        self._ime = ImeController()
         self._scroll_remainder_x = 0.0
         self._scroll_remainder_y = 0.0
 
@@ -63,10 +70,19 @@ class DesktopBackend:
                 # MSS must be imported before input libraries to preserve DPI coordinates.
                 import mss
                 from PIL import Image
-                from pynput.keyboard import Controller as KeyboardController
-                from pynput.keyboard import Key, KeyCode
+                from pynput.keyboard import (
+                    Controller as KeyboardController,
+                )
+                from pynput.keyboard import (
+                    Key,
+                    KeyCode,
+                )
+                from pynput.keyboard import (
+                    Listener as KeyboardListener,
+                )
                 from pynput.mouse import Button
                 from pynput.mouse import Controller as MouseController
+                from pynput.mouse import Listener as MouseListener
 
                 self._mss_module = mss
                 self._image_module = Image
@@ -80,9 +96,32 @@ class DesktopBackend:
 
                     self._pyperclip = pyperclip
                 self._probe_capture()
+                self._start_input_monitoring(MouseListener, KeyboardListener)
             except Exception as exc:
                 raise DesktopUnavailableError(_desktop_error_message(exc)) from exc
             self._initialized = True
+
+    def set_local_input_callback(self, callback: Callable[[], None]) -> None:
+        self._local_input_callback = callback
+
+    @property
+    def local_input_monitoring(self) -> bool:
+        return bool(
+            self._mouse_listener is not None
+            and self._keyboard_listener is not None
+            and self._mouse_listener.running
+            and self._keyboard_listener.running
+        )
+
+    @property
+    def local_input_monitoring_detail(self) -> str:
+        if (
+            self._mouse_listener is not None
+            and self._keyboard_listener is not None
+            and not self.local_input_monitoring
+        ):
+            return "Local input monitoring stopped unexpectedly."
+        return self._input_monitoring_error
 
     def list_screens(self) -> tuple[Screen, ...]:
         self.initialize()
@@ -136,9 +175,7 @@ class DesktopBackend:
                 if message["event"] != "move":
                     button = getattr(self._mouse_button, message["button"])
                     action = (
-                        self._mouse.press
-                        if message["event"] == "down"
-                        else self._mouse.release
+                        self._mouse.press if message["event"] == "down" else self._mouse.release
                     )
                     action(button)
                 return
@@ -155,9 +192,7 @@ class DesktopBackend:
             if message_type == "key":
                 key = self._resolve_key(message["key"])
                 action = (
-                    self._keyboard.press
-                    if message["event"] == "down"
-                    else self._keyboard.release
+                    self._keyboard.press if message["event"] == "down" else self._keyboard.release
                 )
                 action(key)
                 return
@@ -193,6 +228,26 @@ class DesktopBackend:
         except Exception as exc:
             raise DesktopUnavailableError(f"Clipboard write failed: {exc}") from exc
 
+    def ime_status(self) -> ImeState:
+        self.initialize()
+        return self._ime.status()
+
+    def ime_set(self, enabled: bool) -> ImeState:
+        self.initialize()
+        try:
+            return self._ime.set_enabled(enabled)
+        except ImeControlError as exc:
+            raise DesktopUnavailableError(f"IME operation failed: {exc}") from exc
+
+    def shutdown(self) -> None:
+        for listener in (self._mouse_listener, self._keyboard_listener):
+            if listener is not None:
+                with suppress(Exception):
+                    listener.stop()
+        self._mouse_listener = None
+        self._keyboard_listener = None
+        self._ime.close()
+
     def _probe_capture(self) -> None:
         with self._new_capture() as capture:
             if len(capture.monitors) < 2:
@@ -203,6 +258,38 @@ class DesktopBackend:
         if platform.system() == "Linux" and self.settings.capture_cursor:
             options["with_cursor"] = True
         return self._mss_module.MSS(**options)
+
+    def _start_input_monitoring(self, mouse_listener: Any, keyboard_listener: Any) -> None:
+        listeners: tuple[Any, ...] = ()
+        try:
+            listeners = (
+                mouse_listener(
+                    on_move=self._handle_local_input,
+                    on_click=self._handle_local_input,
+                    on_scroll=self._handle_local_input,
+                ),
+                keyboard_listener(
+                    on_press=self._handle_local_input,
+                    on_release=self._handle_local_input,
+                ),
+            )
+            for listener in listeners:
+                listener.start()
+            for listener in listeners:
+                listener.wait()
+        except Exception as exc:
+            for listener in listeners:
+                with suppress(Exception):
+                    listener.stop()
+            self._input_monitoring_error = f"Local input monitoring failed: {exc}"
+            return
+        self._mouse_listener, self._keyboard_listener = listeners
+        self._input_monitoring_error = "Local input monitoring is active."
+
+    def _handle_local_input(self, *args: Any) -> None:
+        injected = bool(args and args[-1] is True)
+        if not injected and self._local_input_callback is not None:
+            self._local_input_callback()
 
     def _resolve_key(self, name: str) -> Any:
         aliases = {
@@ -304,7 +391,6 @@ def _desktop_error_message(exc: Exception) -> str:
         )
     if system == "Windows":
         return (
-            f"Desktop access failed: {detail}. "
-            "Run the server inside the interactive user session."
+            f"Desktop access failed: {detail}. Run the server inside the interactive user session."
         )
     return f"Desktop access failed: {detail}. Check DISPLAY and X11 permissions."

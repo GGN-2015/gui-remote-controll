@@ -43,3 +43,14 @@ def test_monitor_zero_is_named_combined_desktop() -> None:
     )
     assert screen.name == "All displays"
     assert screen.left == -1920
+
+
+def test_only_physical_input_reaches_priority_callback() -> None:
+    backend = ready_backend()
+    events: list[str] = []
+    backend.set_local_input_callback(lambda: events.append("local"))
+
+    backend._handle_local_input("event", True)
+    backend._handle_local_input("event", False)
+
+    assert events == ["local"]
