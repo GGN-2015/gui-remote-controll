@@ -1,0 +1,75 @@
+[build-system]
+requires = ["poetry-core>=1.9.0"]
+build-backend = "poetry.core.masonry.api"
+
+[project]
+name = "gui-remote-controll"
+version = "0.1.0"
+description = "Cross-platform remote desktop control from a web browser."
+authors = [{ name = "GGN_2015" }]
+license = "MIT"
+readme = "README.md"
+requires-python = ">=3.10,<4.0"
+keywords = ["remote-desktop", "screen-sharing", "websocket", "remote-control"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: MacOS X",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: X11 Applications",
+    "Framework :: FastAPI",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "Topic :: Multimedia :: Graphics :: Capture :: Screen Capture",
+]
+dependencies = [
+    "fastapi>=0.115",
+    "mss>=10.0",
+    "pillow>=10.4",
+    "py-admin-launch>=0.1.3",
+    "pynput>=1.8",
+    "pyperclip>=1.9",
+    "uvicorn[standard]>=0.30",
+]
+
+[project.urls]
+Homepage = "https://github.com/GGN-2015/gui-remote-controll"
+Repository = "https://github.com/GGN-2015/gui-remote-controll"
+Documentation = "https://github.com/GGN-2015/gui-remote-controll#readme"
+
+[project.scripts]
+gui-remote-controll = "gui_remote_controll.__main__:main"
+
+[tool.poetry]
+packages = [{ include = "gui_remote_controll" }]
+include = [
+    "gui_remote_controll/static/*",
+    "README.zh-CN.md",
+    "SECURITY.md",
+    { path = "docs", format = "sdist" },
+]
+
+[tool.poetry.group.dev.dependencies]
+httpx2 = ">=2.0"
+pytest = ">=8.0"
+ruff = ">=0.9"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

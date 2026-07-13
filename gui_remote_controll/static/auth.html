@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Sign in · GUI Remote Controll</title>
+  <link rel="stylesheet" href="/static/auth.css">
+</head>
+<body>
+  <main class="auth-shell">
+    <section class="auth-panel" aria-labelledby="auth-title">
+      <div class="brand-mark" aria-hidden="true">GR</div>
+      <h1 id="auth-title">GUI Remote Controll</h1>
+      <p>Enter the server PIN</p>
+      <form id="auth-form" method="post" action="/auth">
+        <label for="pin">PIN</label>
+        <input id="pin" name="pin" type="password" inputmode="numeric" autocomplete="current-password" autofocus required>
+        <div class="auth-error" id="auth-error" role="alert"></div>
+        <button type="submit">Continue</button>
+      </form>
+    </section>
+  </main>
+  <script src="/static/auth.js" defer></script>
+</body>
+</html>

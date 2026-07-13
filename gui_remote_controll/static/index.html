@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>GUI Remote Controll</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="toolbar">
+      <div class="brand-block">
+        <h1>GUI Remote Controll</h1>
+        <span class="connection-state" id="connection-state" data-state="connecting">Connecting</span>
+      </div>
+
+      <div class="toolbar-actions">
+        <label class="monitor-control" for="monitor-select">
+          <span>Screen</span>
+          <select id="monitor-select" disabled></select>
+        </label>
+        <div class="segmented" aria-label="Display scale">
+          <button type="button" id="fit-button" aria-pressed="true">Fit</button>
+          <button type="button" id="actual-button" aria-pressed="false">1:1</button>
+        </div>
+        <button type="button" id="clipboard-button" disabled>Clipboard</button>
+        <button type="button" id="fullscreen-button">Fullscreen</button>
+        <form action="/logout" method="post">
+          <button type="submit" class="quiet-button">Sign out</button>
+        </form>
+      </div>
+    </header>
+
+    <section class="desktop-stage fit-mode" id="desktop-stage" aria-label="Remote desktop">
+      <img id="screen" class="screen" alt="Remote desktop frame" draggable="false">
+      <div class="stage-message" id="stage-message" role="status">
+        <strong id="stage-title">Connecting</strong>
+        <span id="stage-detail">Waiting for the remote desktop</span>
+      </div>
+      <textarea
+        id="input-sink"
+        class="input-sink"
+        aria-label="Remote keyboard input"
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck="false"
+      ></textarea>
+    </section>
+
+    <footer class="statusbar">
+      <span id="screen-info">No frame</span>
+      <span id="mode-info">Control enabled</span>
+    </footer>
+  </main>
+
+  <dialog id="clipboard-dialog" class="clipboard-dialog">
+    <form method="dialog" class="dialog-heading">
+      <h2>Remote clipboard</h2>
+      <button type="submit" class="quiet-button">Close</button>
+    </form>
+    <textarea id="clipboard-text" aria-label="Remote clipboard text" spellcheck="false"></textarea>
+    <div class="dialog-actions">
+      <button type="button" id="clipboard-read">Read remote</button>
+      <button type="button" id="clipboard-write" class="primary-button">Write remote</button>
+      <button type="button" id="clipboard-paste-local">Paste local</button>
+      <button type="button" id="clipboard-copy-local">Copy local</button>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
