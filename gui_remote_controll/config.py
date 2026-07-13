@@ -26,6 +26,10 @@ class Settings:
     trusted_origins: tuple[str, ...] = ()
     tls_enabled: bool = False
     title: str = "GUI Remote Controll"
+    desktop_uid: int | None = None
+    desktop_gid: int | None = None
+    desktop_user: str | None = None
+    desktop_home: str | None = None
 
     @property
     def frame_interval(self) -> float:
@@ -52,3 +56,7 @@ class Settings:
             raise ValueError("max clipboard chars must be between 1 and 10000000")
         if self.pin is not None and not self.pin:
             raise ValueError("pin must not be empty")
+        if self.desktop_uid is not None and self.desktop_uid < 0:
+            raise ValueError("desktop uid must be zero or greater")
+        if self.desktop_gid is not None and self.desktop_gid < 0:
+            raise ValueError("desktop gid must be zero or greater")

@@ -89,6 +89,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--elevation-attempted", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--desktop-uid", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--desktop-gid", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--desktop-user", help=argparse.SUPPRESS)
+    parser.add_argument("--desktop-home", help=argparse.SUPPRESS)
     return parser
 
 
@@ -107,6 +111,10 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
         max_clients=args.max_clients,
         trusted_origins=tuple(args.trusted_origin),
         tls_enabled=bool(args.tls_certfile),
+        desktop_uid=args.desktop_uid,
+        desktop_gid=args.desktop_gid,
+        desktop_user=args.desktop_user,
+        desktop_home=args.desktop_home,
     )
     settings.validate()
     return settings
@@ -120,6 +128,7 @@ def _launch_elevated(raw_args: Sequence[str]) -> int:
         "-m",
         "gui_remote_controll",
         "--elevation-attempted",
+        *_desktop_session_args(),
         *raw_args,
     ]
     try:
@@ -127,6 +136,31 @@ def _launch_elevated(raw_args: Sequence[str]) -> int:
     except AdminLaunchError as exc:
         raise RuntimeError(f"Administrator launch failed: {exc}") from exc
     return result.returncode if result.returncode is not None else 0
+
+
+def _desktop_session_args() -> list[str]:
+    if os.name == "nt" or not hasattr(os, "getuid"):
+        return []
+    uid = os.getuid()
+    gid = os.getgid()
+    if uid == 0:
+        return []
+    try:
+        import pwd
+
+        account = pwd.getpwuid(uid)
+    except (ImportError, KeyError):
+        return ["--desktop-uid", str(uid), "--desktop-gid", str(gid)]
+    return [
+        "--desktop-uid",
+        str(uid),
+        "--desktop-gid",
+        str(gid),
+        "--desktop-user",
+        account.pw_name,
+        "--desktop-home",
+        account.pw_dir,
+    ]
 
 
 def _validate_tls(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:

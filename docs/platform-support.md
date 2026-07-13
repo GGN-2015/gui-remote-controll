@@ -90,7 +90,9 @@ The first value should normally be `x11`, and `DISPLAY` should be nonempty.
 
 The Linux `py-admin-launch` flow prefers `pkexec` and falls back to `sudo`. It explicitly carries
 desktop variables such as `DISPLAY`, `XAUTHORITY`, `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, and
-`DBUS_SESSION_BUS_ADDRESS` so the elevated process can still reach the user's graphical session.
+`DBUS_SESSION_BUS_ADDRESS`. Screen capture and input injection remain elevated. Fcitx, IBus, and
+their settings commands are executed with the original desktop UID/GID and user environment so
+they authenticate to the signed-in user's D-Bus and input-method session instead of root's.
 
 The X server must also accept the credentials represented by `XAUTHORITY`. Start the server from
 a terminal inside the target desktop rather than a remote root shell with no session context.
@@ -128,14 +130,14 @@ The server detects input method frameworks in this order:
 2. `fcitx-remote`;
 3. `ibus`.
 
-Fcitx uses its explicit inactive/active commands. For IBus, the server records the current
-non-XKB engine, selects an enabled `xkb:*` engine for direct input, and restores the recorded
-engine when IME is turned back on. If no prior engine is recorded, it selects the first enabled
-non-XKB engine reported by `ibus list-engine`.
+Fcitx uses its explicit inactive/active commands. For IBus, the server records both the current
+non-XKB engine and direct-input engine. It reads available engine IDs through
+`ibus list-engine --name-only`, prefers engines in the user's `preload-engines` setting, selects
+an `xkb:*` engine for direct input, and restores the recorded non-XKB engine when IME is turned
+back on.
 
-The command and its desktop-session D-Bus connection must be available to the server process.
-This is another reason to launch from the signed-in X11 session and preserve
-`DBUS_SESSION_BUS_ADDRESS` during elevation.
+The command and its desktop-session D-Bus connection must be available. Start from the signed-in
+X11 session so the one-time elevation step can retain the original UID/GID and session variables.
 
 ### Display diagnostics
 
@@ -182,10 +184,13 @@ Accessibility permission is also required for global physical-input monitoring. 
 the server's generated Quartz events, allowing the priority controller to ignore them while
 reacting to physical mouse and keyboard activity.
 
-IME off selects an enabled, selectable, ASCII-capable Text Input Source. The current non-ASCII
-source is retained in memory and restored when IME is turned on. If the server starts while a
-direct-input source is active, turning IME on selects the first enabled, selectable non-ASCII
-source. This changes the current input source but does not disable macOS input services.
+The elevated server invokes a small Text Input Source helper through the signed-in Aqua user's
+`launchctl` session. IME state combines the source type with its ASCII capability: a non-ASCII
+keyboard layout alone is not treated as an IME, and an ASCII-capable Roman mode inside an input
+method is treated as direct input. IME off prefers an ASCII-capable source from the same bundle,
+then a keyboard layout. IME on restores the previous conversion source by source ID, falling back
+to an enabled and selectable input mode. This changes the current input source but does not stop
+macOS input services.
 
 ### Troubleshooting
 

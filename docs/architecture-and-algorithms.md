@@ -267,11 +267,10 @@ The status task samples this state at 150 ms while stable and 50 ms during local
 sends `control_state` only on transitions. Entering either non-available state clears the
 connection's held-input sets and releases those keys/buttons through the native controller.
 
-Before injecting each `pointer`, `wheel`, `key`, or `text` message, the worker thread acquires the
+Before injecting each `pointer`, `wheel`, `key`, `text`, or IME operation, the worker thread acquires the
 arbiter lock and recomputes the state. The backend operation runs under that lock. A physical
 callback that arrives concurrently waits for the already-started native call to finish, then
-immediately establishes the local lease. Messages received after that point are discarded. IME
-operations are also rejected unless the state is `available`.
+immediately establishes the local lease. Messages received after that point are discarded.
 
 The browser mirrors the authoritative state but is not the security boundary. It clears its
 held-input state and stops creating input messages whenever permission is lost. A modified client
@@ -287,13 +286,19 @@ simulates a user-configurable keyboard shortcut.
   the window again and uses the Chinese, Japanese, Korean, or Thai system IME toggle only when the
   explicit update did not reach the requested state.
 - Fcitx 4/5 uses the remote command's explicit active/inactive operations.
-- IBus saves a non-XKB engine, chooses an enabled XKB engine as direct input, and restores the
-  saved engine when enabled again.
-- macOS classifies Text Input Sources by the ASCII-capable property, retains the previous
-  non-ASCII source, and selects an enabled/selectable source matching the requested state.
+- IBus reads machine-parseable IDs with `list-engine --name-only`, prioritizes engines from the
+  user's configured preload list, remembers both direct and conversion engines, and restores them
+  symmetrically.
+- macOS combines Text Input Source type and ASCII capability, remembers the previous conversion
+  source ID, and prefers a direct source in the same input-method bundle. When the server is
+  elevated, a helper performs these operations inside the original Aqua user session.
 
 Platform APIs can report that no controllable source exists. That result is sent as an unsupported
 IME capability; a rejected state change becomes a recoverable WebSocket `error`.
+
+A single application-level synchronizer polls the native state every 750 ms while clients are
+connected. It serializes polling with remote changes, suppresses unchanged results, and broadcasts
+each transition or requested change to every WebSocket client.
 
 ## Clipboard algorithm
 
@@ -362,7 +367,7 @@ JPEG frames are binary messages. All other messages are JSON.
 | `hello` | `protocol`, `title`, `platform`, `viewOnly`, `clipboard`, `control`, `ime`, `screens`, `monitor` | Initial capabilities, permission state, and display list. Current protocol is `1`. |
 | `screen` | screen fields | Metadata for the binary frames that follow. |
 | `control_state` | `state`, `reason`, `detail` | Authoritative `available`, `local_active`, or `restricted` input permission. |
-| `ime_state` | `supported`, `enabled`, `detail` | Current server input method capability and state. |
+| `ime_state` | `supported`, `enabled`, `detail` | Authoritative input method state broadcast to every client. |
 | `clipboard` | `text`, `digest` | Changed or explicitly requested server clipboard text. |
 | `clipboard_unchanged` | `digest` | The supplied server clipboard digest is still current. |
 | `clipboard_saved` | `digest`, optional `requestId` | Confirmation of `clipboard_set`. |

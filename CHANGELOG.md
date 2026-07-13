@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.4
+
+- Fix IBus engine discovery by using the upstream `ibus list-engine --name-only` format and
+  prefer the desktop user's configured preload engines.
+- Run Linux input-method commands and the macOS Text Input Source helper in the signed-in user's
+  session after the one-time administrator launch.
+- Classify macOS input sources by source type and ASCII capability, restore them by stable source
+  ID, and prefer a direct-input mode from the same input-method bundle.
+- Serialize IME changes with the physical-input priority arbiter.
+- Monitor server-side IME changes and broadcast one authoritative state to every WebSocket client.
+- Add bounded state verification on every platform and time out unresponsive Windows IME windows.
+- Add Linux session, macOS source/helper, multi-client synchronization, and local-change tests.
+
 ## 0.1.3
 
 - Fix Windows IME re-enabling when `ImmSetOpenStatus` reports success without changing the

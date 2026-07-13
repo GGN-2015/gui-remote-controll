@@ -11,7 +11,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from fastapi import FastAPI, Request, WebSocket
@@ -34,6 +34,7 @@ STATIC_FILES = {
 }
 LOCAL_INPUT_HOLD_SECONDS = 0.8
 REMOTE_INPUT_TYPES = {"pointer", "wheel", "key", "text"}
+RemoteResult = TypeVar("RemoteResult")
 
 
 class Backend(Protocol):
@@ -101,11 +102,16 @@ class ControlArbiter:
             return self._snapshot_locked()
 
     def execute_remote(self, operation: Callable[[], None]) -> bool:
+        allowed, _ = self.execute_remote_result(operation)
+        return allowed
+
+    def execute_remote_result(
+        self, operation: Callable[[], RemoteResult]
+    ) -> tuple[bool, RemoteResult | None]:
         with self._lock:
             if self._snapshot_locked().state != "available":
-                return False
-            operation()
-            return True
+                return False, None
+            return True, operation()
 
     def _snapshot_locked(self) -> ControlState:
         if self.view_only:
@@ -183,6 +189,95 @@ class ConnectionGate:
             self.active = max(0, self.active - 1)
 
 
+class ImeStateSynchronizer:
+    """Publish one authoritative IME state to every connected browser."""
+
+    def __init__(self, backend_manager: BackendManager, *, interval: float = 0.75) -> None:
+        self.backend_manager = backend_manager
+        self.interval = interval
+        self._clients: dict[int, tuple[WebSocket, asyncio.Lock]] = {}
+        self._last_state: ImeState | None = None
+        self._task: asyncio.Task[None] | None = None
+        self._lock = asyncio.Lock()
+        self._operation_lock = asyncio.Lock()
+
+    async def add(
+        self, websocket: WebSocket, send_lock: asyncio.Lock, initial_state: ImeState
+    ) -> None:
+        broadcast_initial = False
+        async with self._lock:
+            self._clients[id(websocket)] = (websocket, send_lock)
+            if self._last_state is None:
+                self._last_state = initial_state
+            elif self._last_state != initial_state:
+                broadcast_initial = True
+            if self._task is None:
+                self._task = asyncio.create_task(self._run())
+        if broadcast_initial:
+            await self.publish(initial_state, force=True)
+
+    async def remove(self, websocket: WebSocket) -> None:
+        async with self._lock:
+            self._clients.pop(id(websocket), None)
+            if not self._clients:
+                self._last_state = None
+
+    async def publish(self, state: ImeState, *, force: bool = False) -> None:
+        async with self._lock:
+            if not force and state == self._last_state:
+                return
+            self._last_state = state
+            clients = tuple(self._clients.values())
+        payload = {"type": "ime_state", **state.as_message()}
+        await asyncio.gather(
+            *(_send_json(websocket, send_lock, payload) for websocket, send_lock in clients),
+            return_exceptions=True,
+        )
+
+    async def set_enabled(
+        self,
+        arbiter: ControlArbiter,
+        backend: Backend,
+        enabled: bool,
+    ) -> tuple[bool, ImeState | None]:
+        async with self._operation_lock:
+            allowed, state = await asyncio.to_thread(
+                _execute_remote_ime,
+                arbiter,
+                backend,
+                enabled,
+            )
+            if allowed and state is not None:
+                await self.publish(state, force=True)
+            return allowed, state
+
+    async def close(self) -> None:
+        async with self._lock:
+            task = self._task
+            self._task = None
+            self._clients.clear()
+            self._last_state = None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _run(self) -> None:
+        while True:
+            await asyncio.sleep(self.interval)
+            async with self._lock:
+                if not self._clients:
+                    if self._task is asyncio.current_task():
+                        self._task = None
+                    return
+            try:
+                async with self._operation_lock:
+                    backend = await self.backend_manager.get()
+                    state = await asyncio.to_thread(backend.ime_status)
+                    await self.publish(state)
+            except Exception as exc:
+                await self.publish(ImeState(False, None, f"IME status check failed: {exc}"))
+
+
 @dataclass(slots=True)
 class ClientState:
     screens: tuple[Screen, ...]
@@ -203,10 +298,12 @@ def create_app(
     arbiter = ControlArbiter(view_only=runtime.view_only)
     backend_manager = BackendManager(runtime, backend_factory, arbiter)
     gate = ConnectionGate(runtime.max_clients)
+    ime_synchronizer = ImeStateSynchronizer(backend_manager)
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI) -> Any:
         yield
+        await ime_synchronizer.close()
         await backend_manager.close()
 
     app = FastAPI(
@@ -222,6 +319,7 @@ def create_app(
     app.state.backend_manager = backend_manager
     app.state.connection_gate = gate
     app.state.control_arbiter = arbiter
+    app.state.ime_synchronizer = ime_synchronizer
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next: Callable[..., Any]) -> Response:
@@ -353,11 +451,20 @@ def create_app(
                     "monitor": screen.index,
                 }
             )
+            await ime_synchronizer.add(websocket, send_lock, ime_state)
             stream_task = asyncio.create_task(
                 _stream_frames(websocket, backend, state, runtime, send_lock)
             )
             receive_task = asyncio.create_task(
-                _receive_messages(websocket, backend, state, runtime, send_lock, arbiter)
+                _receive_messages(
+                    websocket,
+                    backend,
+                    state,
+                    runtime,
+                    send_lock,
+                    arbiter,
+                    ime_synchronizer,
+                )
             )
             control_task = asyncio.create_task(
                 _stream_control_state(
@@ -383,6 +490,7 @@ def create_app(
         except WebSocketDisconnect:
             pass
         finally:
+            await ime_synchronizer.remove(websocket)
             if backend is not None and state is not None:
                 await _release_client_inputs(backend, state)
             await gate.leave()
@@ -450,6 +558,7 @@ async def _receive_messages(
     settings: Settings,
     send_lock: asyncio.Lock,
     arbiter: ControlArbiter,
+    ime_synchronizer: ImeStateSynchronizer,
 ) -> None:
     while True:
         raw = await websocket.receive_text()
@@ -519,15 +628,18 @@ async def _receive_messages(
                 )
             continue
         if message_type == "ime_set":
-            if arbiter.snapshot().state != "available":
-                await _send_control_state(websocket, send_lock, arbiter.snapshot())
-                continue
             try:
-                ime_state = await asyncio.to_thread(backend.ime_set, message["enabled"])
-                async with send_lock:
-                    await websocket.send_json({"type": "ime_state", **ime_state.as_message()})
+                allowed, ime_state = await ime_synchronizer.set_enabled(
+                    arbiter,
+                    backend,
+                    message["enabled"],
+                )
             except DesktopUnavailableError as exc:
                 await _send_error(websocket, send_lock, str(exc))
+                continue
+            if not allowed or ime_state is None:
+                await _send_control_state(websocket, send_lock, arbiter.snapshot())
+                continue
             continue
         if message_type not in REMOTE_INPUT_TYPES:
             continue
@@ -577,6 +689,14 @@ def _execute_remote_message(
     return arbiter.execute_remote(lambda: backend.execute(message, screen))
 
 
+def _execute_remote_ime(
+    arbiter: ControlArbiter,
+    backend: Backend,
+    enabled: bool,
+) -> tuple[bool, ImeState | None]:
+    return arbiter.execute_remote_result(lambda: backend.ime_set(enabled))
+
+
 async def _release_client_inputs(backend: Backend, state: ClientState) -> None:
     keys = set(state.keys)
     buttons = set(state.buttons)
@@ -584,6 +704,15 @@ async def _release_client_inputs(backend: Backend, state: ClientState) -> None:
     state.buttons.clear()
     if keys or buttons:
         await asyncio.to_thread(backend.release_inputs, keys, buttons)
+
+
+async def _send_json(
+    websocket: WebSocket,
+    lock: asyncio.Lock,
+    payload: dict[str, Any],
+) -> None:
+    async with lock:
+        await websocket.send_json(payload)
 
 
 async def _send_control_state(

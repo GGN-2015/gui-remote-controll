@@ -77,7 +77,7 @@ def test_control_ui_contains_automatic_clipboard_sync() -> None:
     assert "knownDigest" in script.text
     assert 'id="control-permission"' in page.text
     assert 'id="ime-button"' in page.text
-    assert "/static/app.js?v=0.1.3" in page.text
+    assert "/static/app.js?v=0.1.4" in page.text
     assert "{{APP_" not in page.text
 
 
@@ -156,6 +156,68 @@ def test_ime_button_message_changes_server_state() -> None:
         "enabled": False,
         "detail": "Test IME",
     }
+
+
+def test_ime_state_is_broadcast_to_all_clients() -> None:
+    app = create_app(Settings(fps=30), backend_factory=FakeBackend)
+    with (
+        TestClient(app) as client,
+        client.websocket_connect("/ws") as first,
+        client.websocket_connect("/ws") as second,
+    ):
+        for websocket in (first, second):
+            websocket.receive_json()
+            websocket.receive_json()
+            websocket.receive_bytes()
+        first.send_json({"type": "ime_set", "enabled": False})
+        first_state = first.receive_json()
+        second_state = second.receive_json()
+    assert first_state["type"] == "ime_state"
+    assert first_state["enabled"] is False
+    assert second_state == first_state
+
+
+def test_local_ime_change_is_published_over_websocket() -> None:
+    backends: list[FakeBackend] = []
+
+    def factory(settings: Settings) -> FakeBackend:
+        backend = FakeBackend(settings)
+        backends.append(backend)
+        return backend
+
+    app = create_app(Settings(fps=30), backend_factory=factory)
+    app.state.ime_synchronizer.interval = 0.01
+    with TestClient(app) as client, client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.receive_json()
+        websocket.receive_bytes()
+        backends[0].ime_enabled = False
+        state = websocket.receive_json()
+    assert state["type"] == "ime_state"
+    assert state["enabled"] is False
+
+
+def test_physical_input_blocks_ime_operation() -> None:
+    backends: list[FakeBackend] = []
+
+    def factory(settings: Settings) -> FakeBackend:
+        backend = FakeBackend(settings)
+        backends.append(backend)
+        return backend
+
+    app = create_app(Settings(fps=30), backend_factory=factory)
+    app.state.control_arbiter.hold_seconds = 0.2
+    with TestClient(app) as client, client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.receive_json()
+        websocket.receive_bytes()
+        app.state.control_arbiter.record_local_input()
+        blocked = websocket.receive_json()
+        websocket.send_json({"type": "ime_set", "enabled": False})
+        response = websocket.receive_json()
+    assert blocked["state"] == "local_active"
+    assert response["type"] == "control_state"
+    assert backends[0].events == []
 
 
 def test_view_only_reports_restricted_control() -> None:

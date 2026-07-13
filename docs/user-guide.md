@@ -204,14 +204,20 @@ system's input method service. The button is enabled only while **Control availa
   and default IME window, then uses a language-specific system IME toggle only if the requested
   open state was not applied.
 - Linux uses `fcitx5-remote` or `fcitx-remote` when available. With IBus, turning IME off selects
-  an enabled XKB direct-input engine and turning it on restores the saved input method engine.
-- macOS turns IME off by selecting an enabled ASCII-capable input source. It remembers and
-  restores the previous non-ASCII input source when IME is turned on.
+  an available XKB direct-input engine and turning it on restores the saved input method engine.
+  The user's configured IBus preload engines are preferred.
+- macOS identifies an active IME from both the Text Input Source type and ASCII capability. IME
+  off prefers an ASCII-capable mode from the same input-method bundle, then a keyboard layout;
+  IME on restores the previous conversion source by its stable source ID.
 
 The button displays **IME unavailable** when the foreground application has no controllable
 input context, the required Linux input-method command is not running, or macOS exposes no
 matching enabled input source. The operation always queries the resulting state after changing
 it and reports a server error if the requested state was not applied.
+
+IME operations use the same atomic physical-input priority check as mouse and keyboard input.
+The server also polls for input-source changes made locally and broadcasts each changed state to
+all connected browsers. The button is disabled while its request is pending.
 
 ## Clipboard synchronization
 

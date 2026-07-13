@@ -37,6 +37,7 @@
   let imeSupported = false;
   let imeEnabled = null;
   let imeDetail = "IME status is unavailable.";
+  let imePending = false;
   let clipboardEnabled = false;
   let composing = false;
   let pendingPointer = null;
@@ -88,11 +89,15 @@
     controlPermissionLabel.textContent = labels[state];
     controlPermission.title = control?.detail || labels[state];
     modeInfo.textContent = labels[state];
-    if (!canControl) releaseLocalState(false);
+    if (!canControl) {
+      imePending = false;
+      releaseLocalState(false);
+    }
     refreshImeButton();
   }
 
   function updateImeState(ime) {
+    imePending = false;
     imeSupported = Boolean(ime?.supported);
     imeEnabled = typeof ime?.enabled === "boolean" ? ime.enabled : null;
     imeDetail = ime?.detail || "IME status is unavailable.";
@@ -102,7 +107,7 @@
   function refreshImeButton() {
     const known = imeSupported && typeof imeEnabled === "boolean";
     imeButton.textContent = known ? `IME: ${imeEnabled ? "On" : "Off"}` : "IME unavailable";
-    imeButton.disabled = !canControl || !known;
+    imeButton.disabled = !canControl || !known || imePending;
     imeButton.setAttribute("aria-pressed", String(Boolean(imeEnabled)));
     imeButton.title = known
       ? `${imeDetail}. Activate to turn the server IME ${imeEnabled ? "off" : "on"}.`
@@ -221,7 +226,7 @@
         break;
       case "ime_state":
         updateImeState(message);
-        showToast(`Server IME turned ${message.enabled ? "on" : "off"}.`);
+        showToast(`Server IME is now ${message.enabled ? "on" : "off"}.`);
         break;
       case "screen":
         screenInfo.textContent = `${message.name} · ${message.width} × ${message.height}`;
@@ -237,6 +242,7 @@
         break;
       case "error":
         if (message.requestId) clipboardWriteOrigins.delete(message.requestId);
+        imePending = false;
         refreshImeButton();
         showToast(message.message || "Remote operation failed.");
         break;
@@ -720,8 +726,13 @@
   });
 
   imeButton.addEventListener("click", () => {
-    if (!canControl || !imeSupported || typeof imeEnabled !== "boolean") return;
-    send({ type: "ime_set", enabled: !imeEnabled });
+    if (!canControl || !imeSupported || typeof imeEnabled !== "boolean" || imePending) return;
+    imePending = true;
+    refreshImeButton();
+    if (!send({ type: "ime_set", enabled: !imeEnabled })) {
+      imePending = false;
+      refreshImeButton();
+    }
   });
 
   clipboardSyncToggle.addEventListener("change", async () => {

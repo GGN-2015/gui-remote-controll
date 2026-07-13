@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from .config import Settings
-from .ime import ImeControlError, ImeController, ImeState
+from .ime import DesktopSession, ImeControlError, ImeController, ImeState
 
 
 class DesktopUnavailableError(RuntimeError):
@@ -56,7 +56,14 @@ class DesktopBackend:
         self._keyboard_listener: Any = None
         self._local_input_callback: Callable[[], None] | None = None
         self._input_monitoring_error = "Local input monitoring has not started."
-        self._ime = ImeController()
+        self._ime = ImeController(
+            DesktopSession(
+                uid=settings.desktop_uid,
+                gid=settings.desktop_gid,
+                user=settings.desktop_user,
+                home=settings.desktop_home,
+            )
+        )
         self._scroll_remainder_x = 0.0
         self._scroll_remainder_y = 0.0
 
